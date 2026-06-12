@@ -1,0 +1,11 @@
+For production / public launch — not yet. Here's what's missing:
+Area	What's needed
+LLM costs	Switch to a paid Groq plan or another provider; rate-limiting on free tier is a showstopper
+Security	.env contains the Supabase service role key — that's a $SERVICE_ROLE_KEY that grants full DB access. Must be removed from env files and managed via secrets
+Extraction bugs	Continuation rows (Mac, iPad, Wearables) have wrong values because _FINANCIAL_VALUE regex skips bare numbers followed by another number — the $-prefixed iPhone row works but others misalign
+SEC links	Clicking "View on SEC.gov" goes to a search page, not the specific document
+Monitoring	No error tracking, no logging aggregator, no health alerts
+Tests	26 of 52 eval tests are skipped (rate-limited or known-failing) — no CI gate
+Infra	No DB migration automation for deploy, no backup strategy, no staging environment
+Frontend	Some states (loading, empty, error) could be more polished
+Short version: you could deploy a demo today, but I wouldn't put real users on it without fixing the security issue and the continuation-row extraction bug first. Want me to prioritize a specific area?
