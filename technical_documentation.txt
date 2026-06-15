@@ -1,0 +1,3076 @@
+================================================================================
+  QUORUM — AI-POWERED SEC FILING ANALYSIS PLATFORM
+  COMPREHENSIVE TECHNICAL DOCUMENTATION
+  Version 0.1.0
+================================================================================
+
+  Author:      Quorum Engineering Team
+  Last Update: June 2026
+  Repository:  https://github.com/anomalyco/Quorum
+
+================================================================================
+  TABLE OF CONTENTS
+================================================================================
+
+  1.  PROJECT OVERVIEW
+  2.  HIGH-LEVEL ARCHITECTURE
+  3.  TECHNOLOGY STACK
+  4.  COMPLETE DATA FLOW
+  5.  PROJECT FOLDER STRUCTURE
+  6.  SEC FILING INGESTION PIPELINE
+  7.  RETRIEVAL SYSTEM
+  8.  STRUCTURED FINANCIAL EXTRACTION LAYER
+  9.  DETERMINISTIC CALCULATION PIPELINE
+  10. LLM WORKFLOW
+  11. EVIDENCE VALIDATION AND HONEST REFUSAL
+  12. CITATION SYSTEM
+  13. FRONTEND ARCHITECTURE
+  14. AUTHENTICATION SYSTEM
+  15. API ENDPOINTS
+  16. DATABASE DESIGN
+  17. END-TO-END EXAMPLE WALKTHROUGH
+  18. DEBUGGING GUIDE
+  19. DESIGN DECISIONS AND EVOLUTION
+  20. FUTURE IMPROVEMENTS
+  21. CONCLUSION
+
+
+================================================================================
+  1. PROJECT OVERVIEW
+================================================================================
+
+1.1 What the Project Is
+--------------------------------------------------------------------------------
+
+Quorum is an AI-powered document analysis platform purpose-built for SEC
+filing research. It allows financial analysts, investors, and researchers
+to ask 10-K annual natural-language questions about reports and receive:
+
+  - Deterministic, pre-computed financial tables (Revenue by Category,
+    Year-over-Year Growth, CAGR, Revenue Mix percentages)
+  - AI-generated narrative analysis that interprets the tables
+  - Cited evidence from the original SEC filings with chunk-level
+    provenance
+
+The system ingests raw SEC HTML filings, chunks them into manageable pieces,
+embeds them into a vector database, and provides a hybrid search interface
+that combines semantic similarity with keyword-level full-text search.
+
+1.2 The Problem It Solves
+--------------------------------------------------------------------------------
+
+Traditional SEC filing research suffers from several pain points:
+
+  1. Manual extraction: Analysts must manually locate financial tables
+     within hundreds of pages of HTML/PDF filings.
+
+  2. Cross-company comparison: Comparing metrics across companies requires
+     opening multiple filings and normalizing between different reporting
+     formats.
+
+  3. LLM hallucination: Generic LLM chatbots confidently fabricate financial
+     numbers, making them unreliable for investment research.
+
+  4. Lack of provenance: Even when LLMs get numbers right, they rarely cite
+     the specific section, page, and filing year the data came from.
+
+  5. Segment confusion: Cloud segment queries (AWS, Azure, Google Cloud)
+     often fall back to total-company numbers in naive RAG systems.
+
+Quorum solves all five problems with a deterministic extraction-first
+architecture where structured data is computed in Python and the LLM is
+restricted to narrative overlay only.
+
+1.3 Why This Approach Was Chosen
+--------------------------------------------------------------------------------
+
+The key architectural decision is: "compute in Python, narrate in LLM."
+
+Financial metrics are fundamentally deterministic. When a 10-K states that
+"iPhone net sales were $205,489 million in FY2022," no AI inference is
+required to extract or calculate with that number. LLMs, however, are
+notoriously bad at arithmetic — they hallucinate growth rates, misalign
+years, and fabricate revenue splits. By extracting every number through
+pattern-matching regex and computing every derived metric (growth rates,
+CAGR, revenue shares) in deterministic Python, we eliminate the primary
+failure mode of financial AI: numerical hallucination.
+
+The LLM's role is reduced to what it does well: writing fluent, contextual
+narrative that interprets and explains the pre-computed tables. This
+"separation of powers" — deterministic computation → narrative overlay —
+is the project's core architectural philosophy.
+
+1.4 Target Users and Real-World Use Cases
+--------------------------------------------------------------------------------
+
+  - Equity research analysts: "What was Microsoft's Azure revenue growth
+    over the last 3 fiscal years?"
+
+  - Portfolio managers: "Compare Apple and Google's operating margins."
+
+  - Due diligence teams: "What risk factors did NVIDIA add in FY2024?"
+
+  - AI/tech investors: "How has AI disclosure evolved at Amazon?"
+
+  - Competitive intelligence: "Which company has stronger cloud revenue
+    growth — AWS or Azure?"
+
+  - Academic researchers: "Track the evolution of trade policy risk
+    language across the Magnificent 7."
+
+
+================================================================================
+  2. HIGH-LEVEL ARCHITECTURE
+================================================================================
+
+2.1 Overall System Architecture
+--------------------------------------------------------------------------------
+
+The system is composed of five primary layers:
+
+  1. Frontend (React + Vite + Tailwind CSS)
+  2. Backend API (FastAPI + Python)
+  3. Database (PostgreSQL + pgvector)
+  4. Embedding Service (Ollama / Nomic-Embed-Text)
+  5. LLM Service (Groq / Llama 3.3 70B)
+
+2.2 Architecture Diagram
+--------------------------------------------------------------------------------
+
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │  BROWSER (React SPA)                                                │
+  │  ┌──────────────────────────────────────────────────────────────┐   │
+  │  │  AuthContext → Login/Signup                                   │   │
+  │  │  Layout → Sidebar + ChatArea                                  │   │
+  │  │  ThreadContext → ThreadList + ActiveThread                     │   │
+  │  │  Chat → MessageList + Streaming + CitationDrawer              │   │
+  │  │  Settings → Theme + Health + Account                           │   │
+  │  │  api/quorum.ts → HTTP + SSE to Backend                        │   │
+  │  └──────────────────────────────────────────────────────────────┘   │
+  └─────────────────────────┬───────────────────────────────────────────┘
+                            │ HTTP/SSE (localhost:5173 → localhost:8000)
+                            ▼
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │  FASTAPI SERVER (uvicorn)                                           │
+  │                                                                     │
+  │  /auth/*       → login, signup, refresh, me                        │
+  │  /chat/*       → threads, messages, ask, stream                    │
+  │  /documents/*  → document listing                                  │
+  │  /health       → DB connectivity check                             │
+  │                                                                     │
+  │  ┌─────────────┐  ┌──────────────┐  ┌────────────────────────────┐ │
+  │  │ Auth        │  │ Retrieval    │  │ Extraction                 │ │
+  │  │ (Supabase   │  │ HybridSearch │  │ FactSet → Tables           │ │
+  │  │  JWT)       │  │ RRF Fusion   │  │ RevenueParse → GrowthRates │ │
+  │  └─────────────┘  │ Intent Detect│  │ CAGR → RevenueShares       │ │
+  │                    └──────────────┘  └────────────────────────────┘ │
+  │                    ┌──────────────┐  ┌────────────────────────────┐ │
+  │                    │ Coverage     │  │ LLM (Groq)                │ │
+  │                    │ Validation   │  │ Narrative Overlay Only    │ │
+  │                    │ → Expansion  │  │ Rate-Limit Resilience     │ │
+  │                    └──────────────┘  └────────────────────────────┘ │
+  └─────────────────────────┬───────────────────────────────────────────┘
+        │                         │                      │
+        ▼                         ▼                      ▼
+  ┌──────────┐         ┌──────────────┐        ┌──────────────┐
+  │PostgreSQL│         │  Ollama      │        │  Groq API    │
+  │+ pgvector│         │  Nomic       │        │  Llama 3.3   │
+  │          │         │  Embed Text  │        │  70B         │
+  │ Chunks   │         │  (Local  │   │        │              │
+  │ Docs     │         │   768d)      │        │  Rate limit  │
+  │ Profiles │         └──────────────┘        │  100K tpd    │
+  │ Threads  │                                  └──────────────┘
+  │ Messages │
+  └──────────┘
+
+2.3 How Components Communicate
+--------------------------------------------------------------------------------
+
+  1. Browser ↔ FastAPI: HTTP requests (JSON) and Server-Sent Events (SSE)
+     for streaming responses. CORS configured for localhost:5173.
+
+  2. FastAPI ↔ PostgreSQL: SQLAlchemy ORM with psycopg (async-capable)
+     direct connector. Pooled connections via sessionmaker.
+
+  3. FastAPI ↔ Ollama: OpenAI-compatible HTTP API at localhost:11434/v1.
+     Used for generating text embeddings (nomic-embed-text, 768
+     dimensions).
+
+  4. FastAPI ↔ Groq: OpenAI-compatible HTTP API at api.groq.com. Used
+     for LLM narrative generation (llama-3.3-70b-versatile).
+
+  5. FastAPI ↔ Supabase Auth: Supabase client library used for user
+     authentication (signup, login, refresh, JWT verification).
+
+
+================================================================================
+  3. TECHNOLOGY STACK
+================================================================================
+
+3.1 React + Vite + TypeScript 6
+--------------------------------------------------------------------------------
+
+  What it is:  Frontend UI framework (React 19), build tool (Vite 8),
+               and typed JavaScript superset (TypeScript 6).
+
+  Why used:    React provides a component-based architecture for building
+               a complex, stateful chat UI with streaming responses.
+               Vite provides instant hot-module replacement for rapid
+               development. TypeScript provides type safety across the
+               frontend codebase.
+
+  Why chosen:  React was chosen because of its mature ecosystem, excellent
+               TypeScript support, and widespread adoption. Vite was chosen
+               over Create React App for its superior build performance
+               and native TypeScript/ESM support.
+
+  When used:   Every user interaction — rendering the login screen, chat
+               interface, document viewer, settings panel, and theme
+               switching.
+
+  Key dependencies:
+    - react-markdown + remark-gfm: render markdown tables from backend
+    - @supabase/supabase-js: client-side auth
+    - lucide-react: icon library
+    - react-router-dom: client-side routing
+    - date-fns: date formatting
+    - tailwindcss: utility-first CSS
+
+3.2 FastAPI (Python 3.14)
+--------------------------------------------------------------------------------
+
+  What it is:  Modern, fast Python web framework for building APIs.
+
+  Why used:    Powers the entire backend — all REST endpoints, request
+               validation, error handling, and streaming responses.
+
+  Why chosen:  FastAPI provides automatic OpenAPI documentation, Pydantic
+               request/response validation, async support, dependency
+               injection, and excellent performance. Chosen over Flask
+               for its typing-first design and request validation.
+
+  When used:   Every API request passes through FastAPI routing.
+
+3.3 PostgreSQL + pgvector
+--------------------------------------------------------------------------------
+
+  What it is:  PostgreSQL with the pgvector extension for vector similarity
+               search.
+
+  Why used:    Stores all structured data (users, threads, messages,
+               documents, chunks) AND the embedding vectors in a single
+               database — eliminating the operational complexity of
+               maintaining a separate vector database.
+
+  Why chosen:  pgvector was chosen over Pinecone, Weaviate, or Qdrant
+               because:
+                1. No additional infrastructure to manage
+                2. Transactional guarantees — vector writes are ACID
+                3. SQL-level joins between chunks and document metadata
+                4. Lower total cost of operations
+               The trade-off is slower brute-force search at scale, but
+               with 25 SEC filings and ~2000 chunks, performance is
+               adequate. At larger scale, a pgvector HNSW index would
+               be added.
+
+  When used:   Vector similarity search (cosine distance via <=>
+               operator), full-text search (tsvector/tsquery), metadata
+               filtering, and all transactional writes.
+
+3.4 Supabase
+--------------------------------------------------------------------------------
+
+  What it is:  Open-source Firebase alternative providing authentication,
+               database, and storage.
+
+  Why used:    Used specifically for authentication (Auth service). The
+               database is accessed directly via SQLAlchemy, not through
+               Supabase's JS client.
+
+  Why chosen:  Supabase Auth provides a managed JWT-based authentication
+               system with email/password signup, session management, and
+               token refresh — avoiding the need to build a custom auth
+               system. It integrates with PostgreSQL for profile storage.
+
+  When used:   User signup, login, token verification, session refresh.
+
+3.5 SQLAlchemy
+--------------------------------------------------------------------------------
+
+  What it is:  Python SQL toolkit and Object-Relational Mapper.
+
+  Why used:    Maps Python classes to PostgreSQL tables, handles query
+               construction, relationship loading, and connection pooling.
+
+  Why chosen:  The most mature Python ORM with excellent PostgreSQL support
+               including JSONB and UUID column types. Chosen over raw SQL
+               for developer productivity and Alembic migration support.
+
+  When used:   All database read/write operations in the API layer.
+
+3.6 Ollama + Nomic-Embed-Text
+--------------------------------------------------------------------------------
+
+  What it is:  Local model runner (Ollama) running the nomic-embed-text
+               embedding model (768 dimensions).
+
+  Why used:    Generates embedding vectors for document chunks and user
+               queries, enabling semantic search.
+
+  Why chosen:  Nomic-Embed-Text is a high-quality, lightweight embedding
+               model that runs locally with no API costs. Ollama provides
+               an OpenAI-compatible API for easy integration. Chosen over
+               OpenAI's text-embedding-3-small to eliminate per-query
+               embedding costs and keep the system self-contained.
+
+  When used:   During ingestion (every chunk is embedded) and at query
+               time (the user's question is embedded for vector search).
+
+3.7 Groq + Llama 3.3 70B
+--------------------------------------------------------------------------------
+
+  What it is:  Cloud-hosted LLM inference (Groq) running Meta's Llama
+               3.3 70B model.
+
+  Why used:    Generates the natural-language narrative analysis that
+               accompanies the pre-computed financial tables.
+
+  Why chosen:  Groq provides extremely fast inference (thousands of tokens
+               per second) at competitive pricing for a Llama 70B-class
+               model. The open-source Llama model ensures no vendor lock-in.
+
+  Caveats:     The free tier is rate-limited to ~100K tokens per day.
+               At production scale, a paid Groq plan or alternative
+               provider would be necessary.
+
+  When used:   After deterministic extraction, when generating the
+               narrative overlay for the answer.
+
+3.8 Hybrid Search (Vector + FTS)
+--------------------------------------------------------------------------------
+
+  What it is:  Combined retrieval strategy that runs vector similarity
+               search and full-text search in parallel, then fuses
+               results.
+
+  Why used:    Vector search captures semantic meaning ("What was Apple's
+               phone revenue?" → matches "iPhone net sales"). FTS captures
+               exact keyword matches ("Item 1A" → finds risk factor
+               sections). Together, they ensure no relevant chunk is
+               missed.
+
+  When used:   Every user query — both searches execute concurrently.
+
+3.9 Reciprocal Rank Fusion (RRF)
+--------------------------------------------------------------------------------
+
+  What it is:  Algorithm that combines multiple ranked result lists into
+               a single ranking by summing reciprocal ranks.
+
+  Formula:     score(chunk) = SUM(1 / (K + rank_i(chunk))) for each
+               result set i, where K = 60 (configurable).
+
+  Why used:    RRF is a robust, parameter-light fusion method that doesn't
+               require training data or score normalization. It handles
+               the fact that vector and FTS scores are on different scales.
+
+  When used:   After both vector and FTS searches complete, their results
+               are fused into a single ranked list.
+
+3.10 Docker / Docker Compose
+--------------------------------------------------------------------------------
+
+  What it is:  Containerization platform.
+
+  Why used:    Provides consistent development environments and simplifies
+               deployment. The system runs as three containers: backend
+               (FastAPI + uvicorn), frontend (Nginx + static build), and
+               database (PostgreSQL + pgvector).
+
+  Why chosen:  Standard industry practice for reproducible deployments.
+
+  When used:   ``docker compose up --build`` starts the entire system.
+
+3.11 Authentication Mechanism
+--------------------------------------------------------------------------------
+
+  What it is:  JWT-based authentication via Supabase Auth.
+
+  Flow:        User signs up → Supabase creates auth record → backend
+               creates Profile row → user receives JWT → JWT sent as
+               Bearer token on every request → backend verifies via
+               Supabase admin API.
+
+  Rate limit:  In-memory rate limiter (10 requests per 60 seconds per IP)
+               on auth endpoints to prevent brute-force attacks.
+
+3.12 Additional Libraries
+--------------------------------------------------------------------------------
+
+  - structlog: Structured JSON logging with context enrichment
+  - alembic: Database migration management (SQLAlchemy migrations)
+  - httpx: HTTP client for embedding service and Groq API calls
+  - PyMuPDF: PDF text extraction (for potential future PDF file upload)
+  - python-multipart: Form data parsing (for file uploads)
+  - pytest: Test framework with custom markers (eval, not eval)
+  - ruff: Python linter/formatter
+  - pgvector: PostgreSQL vector extension Python bindings
+  - lucide-react: Frontend icon library
+  - react-markdown + remark-gfm: Markdown rendering with table support
+  - date-fns: Date formatting on the frontend
+
+
+================================================================================
+  4. COMPLETE DATA FLOW
+================================================================================
+
+4.1 Pipeline Flow Overview
+-------------------------------------------------------------------------------
+
+The system has two pipelines: **Ingestion** (SEC HTML → database) and
+**Query** (user question → grounded answer).
+
+Ingestion Pipeline:
+
+```
+┌──────────────┐   ┌──────────────┐   ┌──────────────┐   ┌──────────────┐   ┌──────────────┐
+│  SEC EDGAR   │   │  HTML Parser │   │  Section     │   │  Chunking    │   │  Embedding   │
+│  10-K Filings │──→│  strip tags  │──→│  Extractor   │──→│  + Overlap   │──→│  + Storage   │
+│  (HTML)      │   │  skip XBRL   │   │  Item 1–16   │   │  4000 chars  │   │  pgvector    │
+└──────────────┘   └──────────────┘   └──────────────┘   └──────────────┘   └──────────────┘
+                                                                                    │
+                                                                                    ▼
+                                                                           ┌──────────────────┐
+                                                                           │  source_documents│
+                                                                           │  document_chunks │
+                                                                           │  (PostgreSQL)    │
+                                                                           └──────────────────┘
+```
+
+Query Pipeline:
+
+```
+User: "What was Apple's revenue in 2024?"
+      │
+      ▼
+┌──────────────────────┐
+│  1. METADATA FILTER  │ extract_filters("Apple revenue 2024") → tickers=[AAPL], years=[2024]
+└──────────┬───────────┘
+           ▼
+┌──────────────────────┐
+│  2. INTENT DETECTION │ detect_intent("revenue 2024") → "financial_metrics"
+└──────────┬───────────┘
+           ▼
+┌────────────────────────────────────────────────────────────────────┐
+│  3. HYBRID SEARCH (2 parallel queries → RRF fusion → top_k)       │
+│     Vector Search (pgvector cosine)    FTS (ts_rank to_tsquery)   │
+│     ───────────────────────────────    ──────────────────────      │
+│     WHERE ticker=ANY AND year=ANY      WHERE ticker=ANY year=ANY  │
+└──────────────────────────┬─────────────────────────────────────────┘
+                           ▼
+┌────────────────────────────────────────────────────────────────────┐
+│  4. DETERMINISTIC EXTRACTION (Python, no LLM)                     │
+│     extract_facts → FactSet → growth rates → CAGR → revenue shares│
+└──────────────────────────┬─────────────────────────────────────────┘
+                           ▼
+┌────────────────────────────────────────────────────────────────────┐
+│  5. COVERAGE VALIDATION  validate_coverage() → expand if gaps     │
+└──────────────────────────┬─────────────────────────────────────────┘
+                           ▼
+┌────────────────────────────────────────────────────────────────────┐
+│  6. GENERATION  tables first (Python) → LLM narrative overlay    │
+└──────────────────────────┬─────────────────────────────────────────┘
+                           ▼
+┌────────────────────────────────────────────────────────────────────┐
+│  7. CITATIONS  _build_citations(chunks) → deduplicated, filtered │
+└──────────────────────────┬─────────────────────────────────────────┘
+                           ▼
+┌────────────────────────────────────────────────────────────────────┐
+│  8. PERSIST + RESPOND  save message + citations → stream to user │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+4.2 Step-by-Step Request Lifecycle
+-------------------------------------------------------------------------------
+
+This section traces what happens from the moment a user types a question
+until the final rendered answer appears on screen.
+
+  STEP 1: USER INPUT
+  ──────────────────
+  User types a question in the Chat.tsx textarea and presses Enter.
+  The query is sent to `POST /chat/threads/{id}/ask` with the raw text.
+
+  STEP 2: FRONTEND API LAYER
+  ─────────────────────────
+  `api/quorum.ts` serializes the request as JSON and sends it to the
+  FastAPI backend. If streaming is enabled, it opens an EventSource
+  connection to the `/ask/stream` endpoint.
+
+  STEP 3: AUTHENTICATION
+  ─────────────────────
+  FastAPI's `get_current_profile` dependency extracts the Bearer token
+  from the Authorization header, verifies it via Supabase Admin API,
+  loads the user's Profile from the database, and injects it into the
+  request handler. If the token is missing or invalid, a 401 error
+  is returned.
+
+  STEP 4: USER MESSAGE PERSISTENCE
+  ────────────────────────────────
+  The backend saves the user's message to `chat_messages` immediately.
+  This ensures the conversation is preserved even if the server crashes
+  mid-response.
+
+  STEP 5: TICKER DETECTION
+  ────────────────────────
+  `detect_ticker()` in `retrieval.py` scans the query against
+  `COMPANY_TICKER_MAP` using regex word-boundary matching. Returns the
+  first matching ticker (e.g., "Apple" → "AAPL"). For comparison
+  queries, `detect_tickers()` finds ALL matching tickers.
+
+  Example matches:
+    "Compare Microsoft and Amazon" → ["MSFT", "AMZN"]
+    "What was Apple's iPhone revenue?" → "AAPL"
+    "Tell me about AI risks" → None (no company mentioned)
+
+  STEP 6: INTENT DETECTION
+  ────────────────────────
+  `detect_intent()` in `retrieval.py` classifies the query into one of:
+
+    - revenue_mix: "What percentage of revenue comes from iPhone?"
+    - financial_metrics: "What was Apple's revenue growth?"
+    - company_comparison: "Compare Microsoft and Amazon"
+    - risk_factor_diff: "How did NVIDIA's risks change?"
+    - business_segment: "What is AWS revenue?"
+    - ai_disclosure: "How has AI disclosure evolved?"
+    - general: Everything else
+
+  Detection uses substring matching against intent-specific keyword sets.
+  Intents are checked in order from most specific to most general.
+  The first match wins. Two tickers detected = company_comparison fallback.
+
+  STEP 7: RETRIEVAL
+  ────────────────
+  `hybrid_search()` in `retrieval.py` performs three parallel operations:
+
+  a) Query Embedding: The user's question is embedded using Ollama's
+     nomic-embed-text model (768-dimensional vector).
+
+  b) Vector Search: The embedding is compared against all chunk embeddings
+     using cosine distance (<=> operator in PostgreSQL). Returns the top
+     N results (search_depth, default 75), filtered by ticker if one
+     was detected.
+
+  c) Full-Text Search: A PostgreSQL tsquery is built from the query terms
+     (stop words removed, synonym expansion applied). Each term uses
+     prefix matching (:* suffix). Returns the top N results.
+
+  Search depth varies by intent:
+    - Normal: 75 (configurable via retrieval_search_depth)
+    - Structured intents: 80
+    - Company comparison: 80 per ticker
+    - Risk factor diff: 60
+
+  STEP 8: INTENT BOOSTING
+  ──────────────────────
+  After each search, `_apply_intent_boost()` multiplies chunk scores by
+  intent-specific boost factors:
+
+    - Section boost: chunks in Item 7 get 2.0x for revenue_mix intent
+    - Content boost: chunks containing "net sales by category" get 2.0x
+      for revenue_mix intent
+
+  This ensures that the most relevant sections for the detected intent
+  are ranked higher regardless of raw similarity scores.
+
+  STEP 9: RRF FUSION
+  ─────────────────
+  Vector and FTS results are fused using Reciprocal Rank Fusion:
+
+    score(c) = 1/(K + rank_vector(c)) + 1/(K + rank_fts(c))
+
+  K = 60 (retrieval_rrf_k). The fused list is truncated to top_k
+  (default 25, up to 80 for structured intents).
+
+  STEP 10: TICKER FILTERING
+  ─────────────────────────
+  If a single company was detected and the intent is NOT company_comparison,
+  chunks not belonging to that ticker are removed. This is the second
+  layer of the three-layer ticker isolation defense.
+
+  STEP 11: COVERAGE VALIDATION
+  ────────────────────────────
+  `validate_coverage()` in `coverage.py` checks whether the retrieved
+  chunks contain sufficient evidence for the detected intent:
+
+    - For revenue_mix: needs revenue category data
+    - For financial_metrics: needs metric line items
+    - For multi-year intents: needs 2+ fiscal years of data
+    - For segment queries: needs segment-level data
+
+  STEP 12: COVERAGE EXPANSION (IF NEEDED)
+  ──────────────────────────────────────
+  If coverage validation finds gaps, `expand_coverage()` broadens the
+  search by:
+
+    1. Expanding the query with related terms
+    2. Increasing the search depth
+    3. Searching for specific missing elements
+
+  After expansion, a second ticker filter is applied (third defense
+  layer). Coverage is re-validated.
+
+  STEP 13: CONVERSATION HISTORY
+  ────────────────────────────
+  The last 6 messages (3 user/assistant exchanges) from the current
+  thread are loaded and formatted as {role, content} dicts.
+
+  STEP 14: STRUCTURED EXTRACTION
+  ──────────────────────────────
+  For structured intents (revenue_mix, financial_metrics,
+  company_comparison):
+
+    a) `extract_facts()` processes every retrieved chunk:
+
+       - Revenue table parsing: chunks with "net sales by category"
+         are parsed for product category names (iPhone, Mac, iPad, etc.)
+         and their corresponding dollar values across fiscal years.
+
+       - Segment extraction: tickers in SEGMENT_REGISTRY (AMZN, MSFT,
+         GOOGL, NVDA) are searched for cloud segment keywords.
+
+       - Known metrics extraction: common financial line items (Total
+         Revenue, Gross Margin, Net Income, etc.) are extracted using
+         label-based regex matching.
+
+    b) Facts are deduplicated via frequency-based voting — the most
+       common value for each (ticker, metric, year) wins.
+
+    c) Derived metrics are computed:
+
+       - Revenue Shares: category_value / total_revenue × 100
+       - YoY Growth: (current - previous) / previous × 100
+       - CAGR: (last/first)^(1/n) - 1
+
+    d) `format_structured_context()` renders everything into markdown
+       tables:
+
+       - Revenue by Category ($M)
+       - Revenue Mix (%)
+       - Key Financial Metrics
+       - YoY Growth Rates
+       - CAGR
+       - Data Sources (Citations)
+
+  STEP 15: EVIDENCE VALIDATION
+  ────────────────────────────
+  `validate_evidence()` performs 5 levels of checks:
+
+    Level 1: Chunks exist and have content
+    Level 2: Ticker coverage matches the query
+    Level 3: Multi-year intents have 2+ fiscal years
+    Level 4: Risk-factor-diff has Item 1A chunks from 2+ years
+    Level 5: Structured intents have extractable facts
+
+  If any level fails, the system returns the pre-computed tables with
+  an insufficient-evidence message and skips the LLM call entirely.
+
+  STEP 16: SEGMENT QUERY GUARD
+  ────────────────────────────
+  If the query is segment-specific (AWS, Azure, Google Cloud) but no
+  segment facts were extracted, the system returns an insufficient-
+  evidence response. It NEVER falls back to total-company metrics.
+
+  STEP 17: LLM NARRATIVE GENERATION
+  ────────────────────────────────
+  If all validations pass:
+
+    a) The system prompt is selected based on intent (revenue_mix
+       narrative, financial_metrics narrative, etc.).
+
+    b) The pre-computed tables are inserted as the user message content.
+
+    c) The conversation history (last 6 messages) is appended between
+       the system prompt and the current user message.
+
+    d) The LLM (Groq Llama 3.3 70B) generates ONLY narrative text that
+       references the pre-computed tables — it is explicitly instructed
+       NOT to reproduce tables or calculate metrics.
+
+  If the LLM is rate-limited, the pre-computed tables are returned with
+  a friendly message: "AI narrative generation is temporarily unavailable."
+
+  STEP 18: POST-PROCESSING
+  ────────────────────────
+  The LLM's response is checked for:
+
+    - Vague / hedging language ("I don't have enough information")
+    - Explicit insufficiency markers ("cannot answer this question")
+    - Very short (<15 words) refusal patterns
+
+  If detected, the response is replaced with a standardized
+  insufficient-evidence message.
+
+  STEP 19: CITATION BUILDING
+  ──────────────────────────
+  `_build_citations()` creates deduplicated citation entries from the
+  retrieved chunks. Each citation includes:
+
+    - chunk_id (UUID)
+    - ticker, fiscal_year
+    - section_title
+    - page_number
+    - excerpt (first 500 characters of chunk content)
+
+  Duplicate chunk IDs are removed. No chunk appears twice.
+
+  STEP 20: RESPONSE PERSISTENCE
+  ────────────────────────────
+  The assistant's message is saved to chat_messages. Citation records
+  are saved to message_citations, linking each citation to the response.
+
+  STEP 21: FRONTEND RENDERING
+  ──────────────────────────
+  The response is returned as JSON (or streamed via SSE). The frontend
+  renders:
+
+    - Structured tables: rendered as HTML tables via react-markdown +
+      remark-gfm, wrapped in overflow-x-auto containers
+    - LLM narrative: rendered as markdown below the tables
+    - Citations: pill buttons below the message, clickable to open a
+      source drawer showing the excerpt and a link to SEC.gov
+
+================================================================================
+  5. PROJECT FOLDER STRUCTURE
+================================================================================
+
+5.1 Top-Level Layout
+--------------------------------------------------------------------------------
+
+  quorum/
+  ├── AGENTS.md                # Agent instructions for AI coding tools
+  ├── README.md                # Project overview and setup guide
+  ├── docker-compose.yml       # Three-container Docker setup
+  ├── data/
+  │   └── downloads/           # Raw SEC HTML filings + manifest.json
+  ├── backend/
+  │   ├── pyproject.toml       # Python dependencies and project config
+  │   ├── Dockerfile           # Backend container build
+  │   ├── .env.example         # Required environment variables
+  │   ├── alembic/             # Database migration scripts
+  │   │   ├── env.py           # Alembic environment configuration
+  │   │   └── versions/        # Generated migration files
+  │   ├── scripts/
+  │   │   └── ingest_html.py   # SEC filing ingestion pipeline
+  │   ├── tests/
+  │   │   ├── test_extraction.py    # Unit tests for extraction layer
+  │   │   ├── test_rag.py           # Unit tests for RAG pipeline
+  │   │   ├── test_retrieval.py     # Unit tests for retrieval system
+  │   │   ├── test_risk_diff.py     # Unit tests for risk diff engine
+  │   │   ├── test_auth.py          # Unit tests for auth endpoints
+  │   │   ├── smoke_test_queries.py # Manual smoke tests
+  │   │   └── eval_suite.py         # 52 regression eval tests
+  │   └── app/
+  │       ├── main.py          # FastAPI entrypoint + lifespan
+  │       ├── config.py        # Pydantic Settings (single source of truth)
+  │       ├── api/
+  │       │   ├── auth.py      # Login/signup/refresh/me endpoints
+  │       │   ├── chat.py      # Threads + ask + streaming endpoints
+  │       │   └── documents.py # Document listing endpoints
+  │       ├── core/
+  │       │   ├── deps.py      # FastAPI dependency injection (auth, db)
+  │       │   └── logging.py   # structlog configuration
+  │       ├── domain/
+  │       │   ├── embeddings.py    # Ollama embedding client
+  │       │   ├── retrieval.py     # Hybrid search, RRF, intent detection
+  │       │   ├── extraction.py    # Financial fact extraction (core)
+  │       │   ├── rag.py           # Answer generation + LLM integration
+  │       │   ├── coverage.py      # Evidence coverage validation
+  │       │   ├── workflows.py     # Intent-aware prompt selection
+  │       │   ├── comparison.py    # Multi-ticker comparison engine
+  │       │   ├── revenue_mix.py   # Revenue mix context builder
+  │       │   └── risk_diff.py     # Risk factor diff engine
+  │       ├── models/
+  │       │   ├── base.py      # SQLAlchemy Base, engine, mixins
+  │       │   ├── document.py  # SourceDocument, DocumentChunk
+  │       │   ├── chat.py      # ChatThread, ChatMessage, MessageCitation
+  │       │   └── profile.py   # Profile model
+  │       └── schemas/
+  │           ├── __init__.py
+  │           ├── auth.py      # Pydantic models for auth requests/responses
+  │           ├── chat.py      # Pydantic models for chat API
+  │           └── retrieval.py # Pydantic models for search API
+  └── frontend/
+      ├── package.json         # Node dependencies
+      ├── Dockerfile           # Frontend container build
+      ├── nginx.conf           # Nginx config for production build
+      └── src/
+          ├── App.tsx          # Root component + routing
+          ├── index.css        # Tailwind imports + custom animations
+          ├── index.html       # HTML entry point
+          ├── vite.config.ts   # Vite build configuration
+          ├── components/
+          │   ├── Chat.tsx         # Main chat interface + streaming
+          │   ├── Layout.tsx       # Sidebar + resizable layout
+          │   ├── ThreadContext.tsx # Shared thread state provider
+          │   ├── AuthContext.tsx   # Auth state provider
+          │   ├── Login.tsx        # Login form
+          │   ├── Signup.tsx       # Signup form
+          │   ├── Settings.tsx     # Settings tab (theme, health, account)
+          │   └── Documents.tsx    # Document browser (search + viewer)
+          ├── api/
+          │   └── quorum.ts   # HTTP client for all API calls
+          ├── lib/
+          │   └── supabase.ts # Supabase client initialization
+          └── types/
+              └── index.ts    # Shared TypeScript interfaces
+
+5.2 Module Dependency Map
+--------------------------------------------------------------------------------
+
+  API Layer (api/)         domain/ Layer           models/ Layer
+  ─────────────────────────────────────────────────────────────
+  chat.py  ──────────→    rag.py ─────────→     chat.py
+              │              │                    document.py
+              │              ├── retrieval.py ─→
+              │              │                      base.py
+              │              ├── extraction.py
+              │              │
+              │              ├── workflows.py
+              │              │     ├── retrieval.py
+              │              │     ├── extraction.py
+              │              │     ├── revenue_mix.py
+              │              │     ├── risk_diff.py
+              │              │     └── comparison.py
+              │              │
+              │              ├── coverage.py ──→ retrieval.py
+              │              │
+              │              └── embeddings.py
+              │
+  auth.py ─────────→    auth.py (domain) ──→  models/
+              │
+   documents.py ─────→    models/
+
+5.3 Key Files Reference
+--------------------------------------------------------------------------------
+
+| File | Role |
+|------|------|
+| `scripts/ingest_html.py` | SEC HTML → source_documents + document_chunks |
+| `app/domain/embeddings.py` | `generate_embedding()` — Ollama nomic-embed-text |
+| `app/domain/retrieval.py` | `extract_filters()`, `_vector_search()`, `_fts_search()`, `hybrid_search()`, `detect_intent()` |
+| `app/domain/extraction.py` | `extract_facts()`, `compute_cagr()`, `compute_growth_rates()`, `compute_revenue_shares()` |
+| `app/domain/coverage.py` | `validate_coverage()`, `expand_coverage()` |
+| `app/domain/workflows.py` | Intent-specific prompts + structured answer builders |
+| `app/domain/revenue_mix.py` | `build_mix_context()` — revenue mix tables |
+| `app/domain/risk_diff.py` | `build_risk_diff_context()` — risk factor diffs |
+| `app/domain/comparison.py` | `build_comparison_context()` — multi-ticker tables |
+| `app/domain/rag.py` | `generate_answer()`, `generate_answer_stream()`, `_build_citations()` |
+| `app/api/chat.py` | HTTP endpoints: ask, stream, thread CRUD |
+
+
+===============================================================================
+   6. SEC FILING INGESTION PIPELINE
+================================================================================
+
+6.1 Overview
+--------------------------------------------------------------------------------
+
+The ingestion pipeline transforms raw SEC HTML 10-K filings into a
+searchable, section-aware, embedded chunk collection stored in PostgreSQL.
+It is implemented in `scripts/ingest_html.py` and designed to be run as
+a batch process whenever new filings are downloaded.
+
+6.2 Filing Acquisition
+--------------------------------------------------------------------------------
+
+Filings are stored as raw HTML files in `data/downloads/` alongside a
+`manifest.json` that maps each filing to metadata:
+
+  {
+    "filings": [
+      {
+        "ticker": "AAPL",
+        "company_name": "Apple Inc.",
+        "report_date": "2023-09-30",
+        "local_path": "aapl_2023.html",
+        "source_url": "https://www.sec.gov/..."
+      },
+      ...
+    ]
+  }
+
+Currently, 25 filings are ingested: AAPL, MSFT, NVDA, AMZN, GOOGL for
+fiscal years 2021 through 2025 (5 tickers × 5 years).
+
+6.3 HTML Extraction
+--------------------------------------------------------------------------------
+
+`extract_narrative(html: str) → str` processes raw HTML:
+
+  1. SECHTMLParser (custom HTMLParser subclass) strips all HTML tags,
+     skipping <script> and <style> blocks entirely.
+
+  2. Text is cleaned:
+     - XBRL namespace junk (ix:*, contextRef patterns) removed
+     - URLs removed
+     - ISO dates removed
+     - Whitespace collapsed
+
+  3. Boilerplate markers are removed by finding the earliest occurrence
+     of "UNITED STATES SECURITIES AND EXCHANGE COMMISSION", "Commission
+     file number", or "TABLE OF CONTENTS" — anything before these is
+     SEC-mandated boilerplate.
+
+  4. Returns cleaned, plain text ready for section extraction.
+
+6.4 Section Extraction
+--------------------------------------------------------------------------------
+
+`extract_sections(text: str) → list[tuple[str, str]]`
+
+The text is split into Item-based sections using the regex:
+
+  (Item\s+(?:\d+[A-Za-z]?)(?:\.|\b))(.*?)(?=(?:Item\s+(?:\d+[A-Za-z]?)(?:\.|\b))|\Z)
+
+This matches "Item 1.", "Item 1A.", "Item 7.", "Item 7A.", "Item 8.",
+etc. and captures all content from that header until the next Item
+header or end of text.
+
+Each matched label is normalized to a canonical title:
+
+  "item 1."    → "Item 1. Business"
+  "item 1a"    → "Item 1A. Risk Factors"
+  "item 7."    → "Item 7. Management's Discussion and Analysis"
+  "item 8."    → "Item 8. Financial Statements and Supplementary Data"
+  ... (16 total mappings in _COMMON_SECTION_TITLES)
+
+If no Item headers are found, the entire text is treated as
+"Full Filing".
+
+6.5 Chunking Strategy
+--------------------------------------------------------------------------------
+
+`chunk_into_sections(sections, max_chars=4000, overlap=200)`
+
+Each section is independently chunked, preserving section boundaries:
+
+  1. Within a section, the text is split by longest-separator-first:
+     \n\n → \n → . (period+space)
+
+  2. Parts are accumulated until adding the next part would exceed
+     max_chars (4000 characters).
+
+  3. When a chunk is finalized, the last ~200 characters are carried
+     as overlap into the next chunk to prevent information loss at
+     chunk boundaries.
+
+  4. A global chunk_index is incremented across ALL sections (not
+     reset per section), ensuring unique chunk ordering.
+
+  5. Each chunk is tagged with its section_title, preserving section
+     provenance.
+
+This approach was chosen over sliding-window chunking because:
+  - Section boundaries are semantically meaningful (you don't want
+    Item 7 content bleeding into Item 8 chunks)
+  - The overlap ensures continuity within sections
+  - The global index preserves reading order
+
+6.6 Embedding Generation
+--------------------------------------------------------------------------------
+
+For each chunk, the system:
+
+  1. Calls `generate_embedding(chunk_text)` via Ollama's OpenAI-
+     compatible API using the nomic-embed-text model.
+
+  2. If a chunk is too long for the embedding model (context window
+     issue), it is recursively split into 2000-character sub-chunks,
+     each independently embedded.
+
+  3. The 768-dimensional embedding vector is stored in the
+     DocumentChunk.embedding column (pgvector Vector(768) type).
+
+6.7 Database Storage
+--------------------------------------------------------------------------------
+
+For each filing, the following are created:
+
+  1. SourceDocument record:
+     - id (UUID, primary key)
+     - ticker, fiscal_year, filing_type="10-K"
+     - title (e.g., "AAPL 10-K 2023")
+     - content (full text, truncated to 500K chars)
+     - source_type="sec_filing"
+
+  2. DocumentChunk records (one per chunk):
+     - id (UUID, primary key)
+     - document_id (FK → source_documents.id)
+     - chunk_index (global unique index)
+     - content (chunk text)
+     - section_title (e.g., "Item 7. Management's Discussion and
+       Analysis")
+     - page_number (always 1 for SEC filings)
+     - token_count (word count approximation)
+     - embedding (768d vector)
+
+A unique index exists on (document_id, chunk_index) preventing
+duplicate chunk entries.
+
+6.8 Key Design Decisions
+--------------------------------------------------------------------------------
+
+  - Global chunk_index: Prevents ambiguity when debugging
+    retrieval results. Without a global index, two documents could
+    both have "chunk 5" with different content.
+
+  - Section-aware chunking prevents cross-section contamination.
+    A retrieval for "risk factors" will never return a chunk that
+    mixes risk factor text with financial statement text.
+
+  - max_chars=4000 is a balance: large enough to give the LLM
+    meaningful context but small enough to stay within embedding
+    model limits and LLM context windows.
+
+  - Overlap=200 chars prevents sentences from being cut mid-thought
+    at chunk boundaries.
+
+
+================================================================================
+  7. RETRIEVAL SYSTEM
+================================================================================
+
+7.1 Query Preprocessing
+--------------------------------------------------------------------------------
+
+When a user sends a query, the retrieval system prepares it through
+several stages. All logic lives in `retrieval.py`.
+
+7.2 Ticker Detection
+--------------------------------------------------------------------------------
+
+`detect_ticker(query) → str | None` and `detect_tickers(query) → list[str]`
+
+The query is scanned against COMPANY_TICKER_MAP:
+
+  {
+    "apple": "AAPL", "microsoft": "MSFT", "nvidia": "NVDA",
+    "amazon": "AMZN", "alphabet": "GOOGL", "google": "GOOGL",
+    "aws": "AMZN", "azure": "MSFT", "gcp": "GOOGL",
+    "aapl": "AAPL", "msft": "MSFT", "nvda": "NVDA", ...
+  }
+
+Each key is matched as a whole word using \b word boundaries, so
+"microsoft" in "Microsoft's Azure revenue" matches MSFT while
+"micro" in "microcontroller" does not.
+
+`detect_tickers()` (plural) extracts ALL tickers from the query and
+deduplicates them, preserving detection order. This is critical for
+comparison queries like "Compare Microsoft and Amazon's cloud business."
+
+7.3 Intent Detection
+--------------------------------------------------------------------------------
+
+`detect_intent(query) → str`
+
+The query is classified into one of seven intents by substring matching
+against keyword sets. Intents are checked in this order:
+
+  1. revenue_mix     - "revenue mix", "percentage of revenue", "product mix"
+  2. risk_factor_diff - "risk factor", "item 1a", "added risk"
+  3. company_comparison - "compare", "vs", "versus", or 2+ tickers
+  4. financial_metrics - "revenue", "gross margin", "cagr", "diluted eps"
+  5. ai_disclosure   - "artificial intelligence", "ai disclosure"
+  6. business_segment - "aws", "azure", "google cloud", "data center"
+  7. general         - fallback for everything else
+
+The order is intentional: "revenue_mix" is checked before
+"financial_metrics" because "revenue mix" contains "revenue" but
+deserves more specific handling. "company_comparison" requires either
+a comparison keyword or 2+ detected tickers, preventing false positives.
+
+Each intent has a corresponding _SECTION_BOOST_MAP and
+_INTENT_BOOST_PHRASES that affect retrieval scoring (see section 7.7).
+
+7.4 Hybrid Retrieval
+--------------------------------------------------------------------------------
+
+`hybrid_search(query, db, top_k, ticker, search_depth) → list[RetrievedChunk]`
+
+The function runs two searches in parallel:
+
+  a) Vector Search (_vector_search)
+  b) Full-Text Search (_fts_search)
+
+Both return up to `search_depth` results (default 75), not `top_k`.
+The extra depth ensures the RRF fusion has enough candidates to work
+with.
+
+7.5 Vector Search
+--------------------------------------------------------------------------------
+
+The query is embedded using the same Ollama nomic-embed-text model used
+during ingestion. The resulting 768-dimensional vector is compared
+against all chunk embeddings using:
+
+  dc.embedding <=> CAST(:embedding AS vector)  -- cosine distance
+
+Only chunks with non-null embeddings and source_type='sec_filing' are
+considered. Results are ordered by cosine distance (ascending) and
+limited to search_depth + top_k.
+
+If a ticker was detected, the SQL adds a filter:
+  sd.ticker = :ticker
+
+This is the FIRST layer of the three-layer ticker isolation defense.
+
+After fetching results, a follow-up query joins with source_documents
+to populate ticker, fiscal_year, and company_name metadata on each
+RetrievedChunk.
+
+7.6 Full-Text Search
+--------------------------------------------------------------------------------
+
+`_build_fts_query(query) → str | None`
+
+The FTS query is built using these steps:
+
+  1. Extract all alphanumeric tokens from the query.
+  2. Remove stop words (how, has, its, over, the, ... ~70 words).
+  3. Remove tokens ≤2 characters.
+  4. Expand synonyms via _SYNONYM_MAP:
+       revenue ↔ sales, profit ↔ income ↔ margin, year ↔ annual, ...
+  5. Sort remaining terms by length (longest first, favoring specificity).
+  6. Take top 5 terms.
+  7. Join with OR (|) and append :* for prefix matching.
+
+Examples:
+  "What was Apple's revenue growth?"
+    → terms: {apple, revenue, growth}
+    → synonyms: {apple, revenue, sales, growth}
+    → tsquery: "apple:* | revenue:* | sales:* | growth:*"
+
+  "Compare Microsoft and Amazon cloud revenue"
+    → terms: {microsoft, amazon, cloud, revenue}
+    → synonyms: {microsoft, amazon, cloud, revenue, sales}
+    → tsquery: "microsoft:* | amazon:* | cloud:* | revenue:* | sales:*"
+
+The PostgreSQL query uses:
+  WHERE to_tsvector('english', dc.content) @@ to_tsquery('english', :query)
+
+Results are ordered by ts_rank (relevance) descending.
+
+7.7 Intent Boosting
+--------------------------------------------------------------------------------
+
+After each search completes, `_apply_intent_boost()` applies
+intent-specific score multipliers:
+
+  Section boost (based on chunk.section_title):
+    revenue_mix gets:
+      "results of operations" → 2.5x
+      "management discussion" → 2.0x
+      "item 7"               → 2.0x
+      "item 8"               → 1.5x
+
+    risk_factor_diff gets:
+      "item 1a"              → 3.0x
+      "risk factors"         → 2.5x
+
+  Content boost (based on chunk.content):
+    revenue_mix gets:
+      "net sales by category"                → 2.0x
+      "products and services performance"    → 2.0x
+
+    company_comparison gets:
+      "revenue"  → 1.2x
+      "net income" → 1.3x
+      "operating income" → 1.3x
+
+For each chunk, the maximum applicable multiplier is applied. A chunk
+matching both a section boost and content boost gets the higher of
+the two, not the product. This prevents runaway scoring.
+
+After boosting, chunks are re-sorted by their new scores descending.
+
+7.8 RRF Fusion Algorithm
+--------------------------------------------------------------------------------
+
+`_fuse_results(vector_results, fts_results, top_k) → list[RetrievedChunk]`
+
+  For each result list, each chunk at rank r (0-indexed) receives:
+    rrf_score = 1 / (K + r + 1)
+
+  Where K = 60 (retrieval_rrf_k from settings).
+
+  Chunk IDs appearing in BOTH lists accumulate scores from both:
+    final_score(chunk) = 1/(K + rank_vector) + 1/(K + rank_fts)
+
+  Chunks appearing in only one list contribute only their single score.
+
+  Results are sorted by final_score descending and truncated to top_k.
+
+Why K=60? RRF's K parameter controls the balance between rank position
+and the advantage of appearing in multiple lists. A higher K reduces
+the score difference between ranks, giving more weight to the number
+of lists a chunk appears in. K=60 was chosen empirically to favor
+chunks that match both semantic vector search and keyword FTS.
+
+7.9 Post-Fusion Ticker Filter
+--------------------------------------------------------------------------------
+
+After fusion, if a single ticker was detected and the intent is not
+company_comparison, chunks not matching the detected ticker are
+removed. This is the SECOND layer of ticker isolation.
+
+The THIRD layer happens in `chat.py` after coverage expansion, where
+`filter_expanded_to_single_ticker()` is called again.
+
+This three-layer defense (SQL filter → post-fusion filter → API filter)
+ensures that even in edge cases (e.g., a chunk's embedding happening
+to be similar to a different company's content), no cross-company
+contamination occurs in single-company queries.
+
+7.10 Coverage Expansion
+--------------------------------------------------------------------------------
+
+When `validate_coverage()` determines that the retrieved chunks lack
+sufficient evidence (e.g., only 1 year of data for a multi-year
+query), the system calls `expand_coverage()`.
+
+The expansion strategy (in `coverage.py`):
+
+  1. Identifies what's missing: ticker coverage, year span, segment data
+  2. Constructs an augmented query with broader terms
+  3. Runs hybrid search with increased top_k
+  4. Merges the new chunks with the original set
+
+After expansion, ticker filtering and coverage re-validation are
+performed.
+
+7.11 Evidence Validation
+--------------------------------------------------------------------------------
+
+`validate_evidence()` (in `workflows.py`) performs a 5-level check
+BEFORE the LLM is called:
+
+  Level 1: At least one chunk exists and has content.
+  Level 2: If the query mentions 1 ticker, that ticker must have
+           chunks. If 2+ tickers, all must have chunks.
+  Level 3: Multi-year intents (revenue_mix, financial_metrics,
+           risk_factor_diff) need data from ≥2 fiscal years.
+  Level 4: risk_factor_diff specifically needs Item 1A chunks from
+           ≥2 years.
+  Level 5: Structured intents need extractable financial facts. If no
+           facts can be extracted, the answer is refused.
+
+If any level fails, the system returns a pre-formatted
+insufficient-evidence message and skips the LLM call entirely.
+This prevents the LLM from being asked to answer without data
+(which would trigger hallucination).
+
+
+================================================================================
+  8. STRUCTURED FINANCIAL EXTRACTION LAYER
+================================================================================
+
+8.1 Philosophy
+--------------------------------------------------------------------------------
+
+The extraction layer (`extraction.py`) is the heart of the system's
+"deterministic-first" architecture. Instead of asking an LLM "what was
+Apple's iPhone revenue?", which invites hallucination, the system uses
+pattern-matching and parsing to extract every number from the SEC
+filing text at the character level.
+
+8.2 Core Data Classes
+--------------------------------------------------------------------------------
+
+FinancialFact:
+  - ticker: str (e.g., "AAPL")
+  - fiscal_year: int (e.g., 2022)
+  - metric_name: str (e.g., "Revenue: iPhone", "Total Revenue", "Net Income")
+  - value: float | None (e.g., 205489.0)
+  - metric_category: MetricCategory (ABSOLUTE, SHARE, GROWTH, CAGR)
+  - source_chunk_id: str (provenance for citation)
+  - section_title: str | None (e.g., "Item 7. Management's Discussion")
+  - is_segment: bool (cloud segment flag)
+  - segment_name: str | None (e.g., "Amazon Web Services (AWS)")
+
+FactSet:
+  - facts: list[FinancialFact]
+  - by_ticker(), by_metric(), by_year() — grouping helpers
+  - get(ticker, metric, year) — single fact lookup
+  - tickers(), years(), metrics() — unique value accessors
+  - facts_by_category(), metrics_by_category() — category filtering
+
+MetricCategory enum:
+  - ABSOLUTE: Dollar values ($M) — revenue, net income, etc.
+  - SHARE: Percentage of total — e.g., "iPhone share of revenue"
+  - GROWTH: Year-over-year change (%) — computed in Python
+  - CAGR: Compound annual growth rate (%) — computed in Python
+
+8.3 Revenue Table Parsing
+--------------------------------------------------------------------------------
+
+`_parse_revenue_table(content, doc_year, ticker, chunk_id, section_title)`
+→ list[FinancialFact]
+
+Triggers when the chunk content contains "net sales by category" or
+"products and services performance" (checked in `extract_facts()`).
+
+Algorithm:
+
+  1. Extract fiscal years from the chunk using _extract_years().
+     Supports 10 patterns (described fully in section 9.2).
+
+  2. Find the table start: search for "net sales by category" or
+     "products and services performance" markers. This is critical
+     because category names like "iPhone" often appear in narrative
+     text before the table.
+
+  3. For each category in CATEGORY_ORDER:
+       ["iPhone", "Mac", "iPad", "Wearables, Home and Accessories",
+        "Services", "Total net sales"]
+
+     a) Find the category name starting from the table_start position.
+     b) Extract a 200-character snippet from that position.
+     c) Run _extract_values() on the snippet.
+     d) If ≥len(years) values found, assign first N values to the
+        N extracted years.
+
+  Example (AAPL FY2022, chunk 59):
+
+    Content:
+      "...net sales by category for 2022, 2021 and 2020 (dollars
+       in millions): 2022 Change 2021 Change 2020 Net sales by
+       category: iPhone (1) $ 205,489 7 % $ 191,973 39 % $ 137,781
+       Mac (1) 40,177 14 % 35,190 23 % 28,622 ..."
+
+    Step 1: _extract_years() → [2022, 2021, 2020]
+    Step 2: table_start = position of "net sales by category"
+    Step 3: find("iPhone", table_start) → position 2880
+            snippet(2880, 2880+200) → "iPhone (1) $ 205,489 7 % ..."
+            _extract_values() → [205489, 191973, 137781]
+            → iPhone FY2022 = $205,489 (correct!)
+            → iPhone FY2021 = $191,973
+            → iPhone FY2020 = $137,781
+
+8.4 Value Extraction (_extract_values)
+--------------------------------------------------------------------------------
+
+`_extract_values(text) → list[float]`
+
+Uses a compound regex:
+
+  r"\$\s*([\d,]+(?:\.\d+)?)"        -- Match $ 205,489 format
+  r"|(?<!\d)([\d,]{4,})(?:\.\d+)?"   -- OR bare number >= 4 digits
+   r"(?!(?:\s*%|\s*\)\s*%|[.-]|\s*\)|\s*\d))"
+
+The first alternative captures dollar-prefixed values like $205,489.
+The second alternative captures bare numbers like 40,177 (from
+continuation rows that don't repeat the $ sign).
+
+The negative lookahead after bare numbers prevents matching:
+  - Year values (2022, 2021) followed by another digit or % sign
+  - Percentage values
+
+Only values ≥ 1000 are retained (filtering out small numbers that
+are unlikely to be financial figures).
+
+Note: This regex has a known limitation — bare numbers followed by
+another number (e.g., "40,177 14" where 14 is the % change) are
+skipped because \s*\d in the negative lookahead triggers. This means
+continuation rows in SEC tables (which omit the $ sign after the
+first row) may have their initial values missed. The iPhone row
+always has $ prefixes, so it is always captured correctly.
+
+8.5 Known Metrics Extraction (_extract_known_metrics)
+--------------------------------------------------------------------------------
+
+Extracts line items like Total Revenue, Gross Margin, Net Income, etc.
+from _KNOWN_LINE_ITEMS dictionary.
+
+For each metric label (e.g., "total net sales"):
+  1. Search for the label in chunk content (case-insensitive).
+  2. Verify the label is followed by $ or a digit (not by "by" or
+     similar false matches).
+  3. Check context before the label — if preceded by "cost of" or
+     similar disallowed prefixes, skip (this prevents "cost of revenue"
+     from matching "revenue").
+  4. Extract values from the following 250 characters.
+  5. Assign values to years (either extracted from chunk or inferred
+     from doc_year).
+
+Context filters (_LABEL_CONTEXT_FILTERS):
+  "revenue" → skip if preceded by "cost of", "costs of", or
+              "cost of sales"
+  "revenues" → same filters
+
+This prevents "Cost of revenue $98,392" from incorrectly creating a
+"Total Revenue" fact.
+
+8.6 Segment Extraction (_extract_segment_facts)
+--------------------------------------------------------------------------------
+
+Ticker-specific segment revenue extraction using SEGMENT_REGISTRY:
+
+  AMZN → "Amazon Web Services (AWS)": searches for "aws", "amazon web services"
+  MSFT → "Intelligent Cloud (Azure)": searches for "azure", "intelligent cloud"
+  GOOGL → "Google Cloud": searches for "google cloud", "gcp"
+  NVDA → "Data Center": searches for "data center", "datacenter"
+
+For each keyword, the function tries multiple positions in the content
+(the first mention might be narrative while a later one is the table row).
+It builds row-limited snippets by finding the next segment keyword and
+stopping there.
+
+8.7 Frequency-Based Deduplication
+--------------------------------------------------------------------------------
+
+`_deduplicate_facts(facts) → list[FinancialFact]`
+
+For each (ticker, metric_name, fiscal_year) tuple, counts how many
+chunks reported each distinct value. The value with the highest
+frequency wins.
+
+This naturally favors correct facts that recur across multiple
+financial-table chunks over:
+  - Spurious matches from narrative text
+  - One-off values from pro-forma tables
+  - Numbers from incorrectly parsed sections
+
+8.8 Chunk Priority Sorting
+--------------------------------------------------------------------------------
+
+Before extraction, chunks are sorted by priority:
+
+  Priority 0 (best): chunk's fiscal_year matches an extracted year
+    from the chunk content (e.g., FY2022 chunk has years [2022,2021,2020])
+  Priority 1: summary/financial table sections
+  Priority 2: has extractable years but no alignment
+  Priority 3 (worst): narrative-only, no years
+  
+Higher-priority chunks are processed first, ensuring that the most
+authoritative data is registered before less reliable sources.
+
+
+================================================================================
+  9. DETERMINISTIC CALCULATION PIPELINE
+================================================================================
+
+9.1 Why Python, Not the LLM
+--------------------------------------------------------------------------------
+
+Financial calculations must be deterministic for several reasons:
+
+  - Auditability: An analyst needs to verify that "$205,489" is the
+    exact number from the filing, not a "close enough" LLM approximation.
+
+  - Consistency: Every query about "iPhone revenue FY2022" must return
+    exactly $205,489, regardless of prompt phrasing or LLM temperature.
+
+  - Staleness: LLMs have training cutoffs. A financial LLM might use
+    2021 data if asked in 2023. Our extraction always uses the most
+    recently ingested filing.
+
+  - Hallucination risk: LLMs are bad at arithmetic, especially with
+    large numbers. They misalign columns, transpose digits, and
+    invent growth rates that don't match the source.
+
+The system enforces this via the narrative overlay prompt:
+  "DO NOT calculate or recalculate any metric."
+  "DO NOT reproduce any table. The tables above are definitive."
+
+9.2 Year Extraction (_extract_years)
+--------------------------------------------------------------------------------
+
+`_extract_years(text) → list[int] | None`
+
+Ten patterns to handle different 10-K table header formats:
+
+  Pattern 1: "2022 Change 2021 Change 2020" (AAPL, MSFT standard)
+  Pattern 2: "2022 Change 2021" (two-year tables)
+  Pattern 3: "Year Ended Sep 24, 2022 Sep 25, 2021 $ Change % Change" (NVDA, AMZN)
+  Pattern 4: "Year Ended Sep 24, 2022 $ Change" (single-year)
+  Pattern 5: "Fiscal Year 2022 Summary" with "Year Ended" elsewhere
+  Pattern 6: "Year Ended Sep 24, 2022 Sep 25, 2021 Sep 26, 2020" (3+ years, no Change)
+  Pattern 7: "(In millions) Year Ended Sep 24, 2022 Sep 25, 2021"
+  Pattern 8: "Year Ended Jun 30, 2022 2021" (MSFT: no month/day for 2nd year)
+  Pattern 9: "2022 2021 Percentage Change" (MSFT segment tables)
+  Pattern 10: Fallback — find all "20[2-9]\d" patterns, take up to 3
+              most recent
+
+Patterns are tried in order; the first match wins. This ensures the
+most reliable pattern (the "Change" header from standard tables) is
+preferred over the heuristic fallback.
+
+9.3 Revenue Share Computation
+--------------------------------------------------------------------------------
+
+`compute_revenue_shares(fact_set) → FactSet`
+
+For each (ticker, year):
+
+  share_pct = category_revenue / total_revenue × 100
+
+  Example:
+    iPhone FY2023 revenue: $200,583
+    Total net sales FY2023: $383,285
+    iPhone share: 200,583 / 383,285 × 100 = 52.3%
+
+Produces SHARE-category facts with metric_name "Share: iPhone",
+"Share: Mac", etc. Only computed for metrics starting with "Revenue:"
+(excludes Total Revenue itself).
+
+9.4 Year-over-Year Growth
+--------------------------------------------------------------------------------
+
+`compute_growth_rates(facts) → list[dict]`
+
+For each ABSOLUTE-category metric with ≥2 years of data:
+
+  growth_pct = (current - previous) / previous × 100
+
+  Example:
+    iPhone FY2021: $191,973
+    iPhone FY2022: $205,489
+    Growth: (205,489 - 191,973) / 191,973 × 100 = 7.0%
+
+SHARE and GROWTH metrics are excluded. Applying growth rates to
+percentage shares is mathematically misleading — "iPhone share went
+from 52.1% to 50.4%" is a -1.7 percentage point change, not a -3.3%
+growth rate.
+
+9.5 CAGR Computation
+--------------------------------------------------------------------------------
+
+`compute_cagr(facts) → list[dict]`
+
+For each ABSOLUTE-category metric with ≥3 years of data:
+
+  CAGR = (last_value / first_value)^(1 / (n-1)) - 1
+
+  Where n = number of years with data.
+
+  Example:
+    iPhone FY2019: $142,381
+    iPhone FY2025: $209,586
+    n = 7 years
+    CAGR = (209,586 / 142,381)^(1/6) - 1 = 6.7%
+
+Same exclusion rules as growth rates — only ABSOLUTE metrics qualify.
+
+9.6 Structured Table Generation
+--------------------------------------------------------------------------------
+
+`format_structured_context(fact_set, intent, growth_rates, cagr_data) → str`
+
+Outputs everything as markdown tables with sections:
+
+  1. Revenue by Category ($M)
+     - Column headers: "Category | FY2019 | FY2020 | ..."
+     - Row format: "AAPL Revenue: iPhone | $142,381 | $137,781 | ..."
+     - Shown for: revenue_mix, financial_metrics, company_comparison
+
+  2. Revenue Mix (%)
+     - Column headers: "Segment | FY2019 | FY2020 | ..."
+     - Row format: "AAPL Share: iPhone | 54.7% | 50.2% | ..."
+     - Shown for: revenue_mix, company_comparison
+
+  3. Key Financial Metrics ($M)
+     - Company-level metrics (Total Revenue, Net Income, Gross Margin)
+     - Shown for: financial_metrics, company_comparison
+
+  4. Year-over-Year Growth Rates
+     - Header: "FY2019→FY2020 | FY2020→FY2021 | ..."
+     - Shown for: financial_metrics, company_comparison
+
+  5. CAGR
+     - Period and percentage
+     - Shown for: financial_metrics, company_comparison
+
+  6. Data Sources (Citations)
+     - Bullet list of citation labels
+
+The `_build_multi_ticker_rows()` function handles cross-company tables
+by prefixing each metric row with the ticker: "AAPL Revenue: iPhone",
+"MSFT Revenue: Intelligent Cloud".
+
+Empty tables (all values None) are suppressed entirely.
+
+
+================================================================================
+  10. LLM WORKFLOW
+================================================================================
+
+10.1 What Is Sent to the LLM
+--------------------------------------------------------------------------------
+
+For structured intents, the LLM receives:
+
+  1. System prompt (intent-specific):
+     - revenue_mix: "You are a senior equity research analyst
+       specializing in revenue mix analysis. The complete revenue mix
+       tables have already been computed..."
+     - financial_metrics: "You are a senior equity research analyst
+       extracting and analyzing financial metrics..."
+     - company_comparison: "You are a senior equity research analyst
+       performing a cross-company comparison..."
+
+     Each prompt includes the SAFETY_INSTRUCTION block:
+       - Never infer beyond the SEC filings
+       - Never make forecasts
+       - Never fabricate numbers
+       - If insufficient evidence, state: "The available filings do
+         not provide enough evidence..."
+
+     And the NARRATIVE_OVERLAY_INSTRUCTION:
+       - DO NOT reproduce any table
+       - DO NOT calculate or recalculate any metric
+       - Read the pre-computed tables carefully
+       - Reference specific figures in narrative (e.g., "iPhone share
+         contracted from 52.1% to 50.4%")
+
+  2. Pre-computed tables (as the user message):
+     "Pre-computed Data Tables:
+      === STRUCTURED FINANCIAL DATA (Pre-computed — Deterministic) ===
+      [full tables with Revenue by Category, Growth Rates, CAGR, etc.]
+      
+      Question: What percentage of Apple's revenue comes from iPhone?"
+
+  3. Conversation history (last 6 messages, injected between system
+     prompt and current user message):
+     [{"role": "user", "content": "...previous question..."},
+      {"role": "assistant", "content": "...previous answer..."}]
+
+10.2 What Is NOT Sent to the LLM
+--------------------------------------------------------------------------------
+
+  - Raw chunk content (for structured intents) — the LLM never sees
+    the original SEC filing text. The pre-computed tables are the
+    exclusive data source.
+
+  - Embeddings or vector search internals.
+
+  - Database credentials or configuration.
+
+  - Other users' data.
+
+For non-structured intents (general, risk_factor_diff, ai_disclosure),
+the retrieved chunk text IS sent to the LLM as context, since those
+intents require free-form text analysis rather than numerical extraction.
+
+10.3 Narrative Overlay Prompts
+--------------------------------------------------------------------------------
+
+The narrative overlay instruction is strict:
+
+  "THE DATA TABLES ABOVE ARE THE COMPLETE STRUCTURED OUTPUT.
+   YOUR JOB IS TO ADD NARRATIVE ANALYSIS ONLY.
+   DO NOT:
+   - Do not reproduce any table.
+   - Do not reformat, reorder, or restate the numbers.
+   - Do not calculate or recalculate any metric.
+   - Do NOT say 'not enough evidence' or 'insufficient data' — the
+     tables are the evidence.
+
+   INSTEAD:
+   1. Read the pre-computed tables carefully.
+   2. Write ONLY the sections listed below — no tables, no data dumps.
+   3. Reference specific figures from the tables in your narrative.
+   4. Provide context and interpretation that the numbers alone don't
+      convey.
+   5. Keep the narrative concise — the tables already show the detail."
+
+10.4 Why the LLM Only Generates Explanations
+--------------------------------------------------------------------------------
+
+The separation of powers is enforced by:
+
+  a) Prompt engineering: Explicit instructions not to calculate.
+  b) Data filtering: The LLM receives pre-computed tables, not raw
+     chunk text (for structured intents).
+  c) Architectural validation: `validate_evidence()` ensures the
+     Python-extracted data exists before the LLM is called.
+  d) Post-processing: `check_sufficient_evidence()` catches LLM
+     outputs that try to hedge or refuse.
+
+10.5 Hallucination Prevention Strategy
+--------------------------------------------------------------------------------
+
+  - Tables First, LLM Second: The answer starts with pre-computed
+    tables. The LLM narrative is appended. If the LLM fails
+    (rate-limited or error), the tables alone form a complete answer.
+
+  - Evidence Gates: The LLM is never called unless evidence validation
+    passes. If chunks are missing expected tickers or years, the
+    system returns "insufficient evidence" without invoking the LLM.
+
+  - Segment Guard: Cloud segment queries (AWS, Azure, Google Cloud)
+    must have segment-level extracted facts. Without them, the system
+    refuses to answer rather than falling back to total-company
+    metrics — even if those metrics exist.
+
+  - Rate-Limit Resilience: When the LLM is unavailable (Groq free
+    tier rate limit), the pre-computed tables are returned with a
+    user-friendly message. The structural integrity of the answer
+    is not compromised.
+
+   - Post-Processing Filter: `check_sufficient_evidence()` scans the
+     LLM output for hedging language ("I don't have enough information",
+     "not explicitly stated", "it's difficult to say") and replaces
+     it with the standardized insufficient-evidence message.
+
+10.6 Intent Workflow Routing
+-------------------------------------------------------------------------------
+
+The intent detection determines which generation path is taken:
+
+| Intent | Extraction | Structure | Prompt |
+|--------|-----------|-----------|--------|
+| `revenue_mix` | `extract_facts` → revenue by category + mix shares | `build_mix_context()` → markdown table | `STRUCTURED_REVENUE_MIX_NARRATIVE` |
+| `financial_metrics` | `extract_facts` → CAGR, margins, growth rates | `format_structured_context()` → markdown section | `STRUCTURED_FINANCIAL_METRICS_NARRATIVE` |
+| `company_comparison` | Per-ticker extraction → side-by-side | `build_comparison_context()` → comparison table | `STRUCTURED_COMPARISON_NARRATIVE` |
+| `risk_factor_diff` | Cross-year section comparison | `build_risk_diff_context()` → diff output | `STRUCTURED_RISK_DIFF_NARRATIVE` |
+| `segment` | Segment-level extraction | `build_mix_context()` filtered to segment | `STRUCTURED_SEGMENT_NARRATIVE` |
+| `ai_disclosure` | Keyword-based chunk filtering | Raw context → LLM | `GENERAL_PROMPT` |
+| `general` | None | Raw context → LLM | `GENERAL_PROMPT` |
+
+For structured intents (revenue_mix, financial_metrics, company_comparison,
+segment), the tables are always rendered before the LLM narrative. The LLM
+receives only the pre-computed tables, never the raw chunk text. For
+non-structured intents, the raw chunk text is sent as context.
+
+
+===============================================================================
+   11. EVIDENCE VALIDATION AND HONEST REFUSAL
+
+================================================================================
+  11. EVIDENCE VALIDATION AND HONEST REFUSAL
+================================================================================
+
+11.1 The Honest Refusal Philosophy
+--------------------------------------------------------------------------------
+
+Quorum is designed to refuse to answer rather than hallucinate. This is
+enforced at multiple layers throughout the pipeline. The system tracks
+exactly what evidence it has and will not generate an answer that exceeds
+that evidence, even if the LLM "wants" to be helpful.
+
+The core principle: "It is better to say 'I don't know' than to be
+confidently wrong about financial data."
+
+11.2 Coverage Validation (coverage.py)
+--------------------------------------------------------------------------------
+
+`validate_coverage(query, chunks, intent) → CoverageReport`
+
+Called in `chat.py` after retrieval and after expansion. Checks:
+
+  1. Chunks exist for the detected ticker(s)
+  2. Multi-year intents have data spanning 2+ fiscal years
+  3. Structured intents have chunks with financial table markers
+  4. Segment queries have segment-specific chunks
+
+Returns a CoverageReport with:
+  - has_gaps: bool
+  - gap_description: str (human-readable explanation of what's missing)
+  - missing_tickers: list[str]
+  - missing_years: list[int]
+  - missing_segments: list[str]
+
+11.3 Evidence Validation (validate_evidence in workflows.py)
+--------------------------------------------------------------------------------
+
+Five-level validation gate called before LLM narrative generation:
+
+  Level 1 — Chunk Existence:
+    Checks that chunks list is non-empty. If empty, returns:
+    "The available filings do not provide enough evidence to answer
+     this question. No documents were retrieved for the query."
+
+  Level 2 — Ticker Coverage:
+    For single-ticker queries: at least one chunk must have the
+    expected ticker.
+    For multi-ticker queries (comparison): every detected ticker must
+    have at least one chunk.
+
+  Level 3 — Multi-Year Span:
+    For revenue_mix and financial_metrics intents: chunks must span
+    2+ fiscal years. Single-year data cannot show trends.
+
+  Level 4 — Risk Factor Specific:
+    For risk_factor_diff intent: must have Item 1A chunks from 2+
+    fiscal years. General narrative chunks don't qualify.
+
+  Level 5 — Fact-Level Coverage:
+    For structured intents: extract_facts() must produce at least one
+    fact. Zero facts means no financial data was found, and the answer
+    cannot proceed.
+
+11.4 Segment Query Guard
+--------------------------------------------------------------------------------
+
+`_is_segment_query(query) → bool` in `workflows.py`
+
+If the query contains any segment keyword (aws, azure, google cloud,
+gcp, data center, cloud revenue, etc.), the system requires
+segment-level extracted facts. Without them, it returns:
+
+  "The available filings do not provide enough evidence to answer
+   this question."
+
+This prevents the dangerous behavior of a user asking "What is AWS
+revenue?" and getting total Amazon revenue instead.
+
+11.5 Insufficient Evidence Response
+--------------------------------------------------------------------------------
+
+The standardized insufficient-evidence response:
+
+  "The available filings do not provide enough evidence to answer
+   this question. The retrieved document excerpts do not contain
+   the specific data or disclosures needed to generate a complete,
+   source-backed analysis."
+
+This message is returned in three scenarios:
+  1. validate_evidence() returns a non-None message
+  2. check_sufficient_evidence() detects hedging in LLM output
+  3. Segment query with no segment facts
+
+11.6 LLM Output Post-Processing
+--------------------------------------------------------------------------------
+
+`check_sufficient_evidence(answer, chunks) → str`
+
+After the LLM generates a response, it is scanned for:
+
+  Regex patterns (VAGUE_RESPONSE_PATTERNS):
+    - "it's important to note"
+    - "it's worth considering"
+    - "I'm sorry, I don't have"
+    - "I cannot provide sufficient"
+    - "based solely on the provided context, it's difficult"
+
+  Substring markers:
+    - "do not have enough evidence"
+    - "does not provide enough evidence"
+    - "cannot answer this question"
+    - "no information provided"
+    - "not enough data"
+    - "insufficient information"
+    - "not explicitly stated"
+
+If any match, the entire response is replaced with the standardized
+insufficient-evidence message. This catches LLMs that try to be
+politely evasive rather than giving a definitive answer.
+
+
+================================================================================
+  12. CITATION SYSTEM
+================================================================================
+
+12.1 How Citations Are Generated
+--------------------------------------------------------------------------------
+
+`_build_citations(chunks) → list[dict]` in `rag.py`
+
+Every retrieved chunk becomes a citation. The citation includes:
+
+  {
+    "chunk_id": "uuid-string",
+    "page_number": 1,
+    "section_title": "Item 7. Management's Discussion and Analysis",
+    "ticker": "AAPL",
+    "fiscal_year": 2022,
+    "excerpt": "first 500 characters of the chunk content"
+  }
+
+Citations are built from the same chunk list that feeds extraction and
+LLM generation, ensuring perfect alignment between the evidence used
+and the citations claimed.
+
+12.2 Deduplication
+--------------------------------------------------------------------------------
+
+Duplicate chunk_id values are removed — no chunk appears twice even
+if it was returned by both vector and FTS search. Deduplication uses
+a `seen: set[str]` tracker before building the citation list.
+
+12.3 Citation Formatting
+--------------------------------------------------------------------------------
+
+Each FinancialFact has a `citation_label` property:
+  "AAPL · FY2022 · Item 7. Management's Discussion and Analysis"
+
+These labels are collected into a "Data Sources (Citations)" section
+at the bottom of the structured markdown output.
+
+On the frontend, citations are rendered as interactive pill buttons:
+  [1] AAPL · FY2024 · p.42
+
+Clicking a pill opens a source drawer showing:
+  - The full excerpt text
+  - Company ticker and fiscal year
+  - Section title
+  - "View on SEC.gov" button (opens EDGAR search in a new tab)
+
+12.4 Why Citations Matter
+--------------------------------------------------------------------------------
+
+  - Trust: Users can verify every number by reading the source excerpt.
+  - Debugging: Developers can trace which chunk produced which fact.
+  - Compliance: Financial research requires auditable sources.
+  - Citations are the third output alongside tables and narrative,
+    making the system's reasoning fully transparent.
+
+
+================================================================================
+  13. FRONTEND ARCHITECTURE
+================================================================================
+
+13.1 Component Tree
+--------------------------------------------------------------------------------
+
+  App.tsx
+  ├── AuthContext.Provider
+  │   └── BrowserRouter
+  │       ├── / → Login.tsx (unauthenticated)
+  │       ├── /signup → Signup.tsx (unauthenticated)
+  │       └── ProtectedApp
+  │           └── ThreadContext.Provider
+  │               └── Layout.tsx
+  │                   ├── Sidebar (resizable, 200-500px)
+  │                   │   ├── Quorum logo + branding
+  │                   │   ├── New Chat button
+  │                   │   ├── Conversation list
+  │                   │   └── Bottom nav (Documents, Settings, Theme, Logout)
+  │                   └── Main content area
+  │                       ├── Chat.tsx (default/thread route)
+  │                       │   ├── Thread title header
+  │                       │   ├── Message list
+  │                       │   │   └── MessageBubble
+  │                       │   │       ├── Markdown content (react-markdown)
+  │                       │   │       │   └── Tables (remark-gfm)
+  │                       │   │       └── Citation pills
+  │                       │   ├── Landing page (no thread selected)
+  │                       │   │   ├── Hero section (logo + welcome)
+  │                       │   │   ├── Quick-action cards (4 items)
+  │                       │   │   ├── Rotating "Try asking" pills
+  │                       │   │   └── Feature highlights
+  │                       │   ├── Suggestion chips
+  │                       │   └── Chat input bar
+  │                       ├── Documents.tsx (documents route)
+  │                       └── Settings.tsx (settings route)
+
+13.2 ThreadContext (State Management)
+--------------------------------------------------------------------------------
+
+`ThreadContext.tsx` provides shared thread state across Layout and Chat:
+
+  - threads: list of ChatThread objects
+  - threadId: currently active thread ID (or null)
+  - loadingThreads: boolean
+  - createThread(title) → creates and selects a new thread
+  - deleteThread(id) → deletes and removes thread
+  - loadThreads() → refreshes the thread list
+
+This context eliminates prop drilling and redundant API calls. Both
+the sidebar (which renders the thread list) and Chat (which renders
+messages) consume the same state.
+
+13.3 AuthContext
+--------------------------------------------------------------------------------
+
+`AuthContext.tsx` manages authentication state:
+
+  - session: Supabase Session or null
+  - profile: User Profile or null
+  - loading: boolean
+  - signIn(email, password) → authenticates
+  - signUp(email, password) → registers
+  - signOut() → logs out
+
+On app load, it checks for an existing Supabase session. If found, it
+fetches the user profile from the backend and stores it.
+
+13.4 Streaming Responses
+--------------------------------------------------------------------------------
+
+The streaming endpoint (`POST /chat/threads/{id}/ask/stream`) uses
+Server-Sent Events (SSE). The frontend consumes events:
+
+  data: {"type": "token", "content": "The"}
+  data: {"type": "token", "content": " iPhone"}
+  data: {"type": "token", "content": " revenue"}
+  data: {"type": "token", "content": " was..."}
+  data: {"type": "done", "citations": [...], "message_id": "..."}
+
+Each token is appended to the current assistant message in the UI.
+The LLM narrative streams in real-time while the pre-computed tables
+are rendered immediately (they arrive as the first chunk).
+
+13.5 Markdown Rendering
+--------------------------------------------------------------------------------
+
+The `Markdown` component wraps react-markdown with remark-gfm for
+GitHub Flavored Markdown (tables). Key configuration:
+
+  - Tables are wrapped in overflow-x-auto containers for horizontal
+    scroll on mobile.
+  - All markdown elements (headings, lists, code, tables) are styled
+    with Tailwind classes matching the dark/light theme.
+  - The component does NOT render inline citations as links —
+    citations are displayed as separate pill buttons below the message.
+
+13.6 Premium Landing Page
+--------------------------------------------------------------------------------
+
+When no thread is selected (or a thread has no messages), a landing
+page replaces the empty chat area:
+
+  - Hero section: Rounded logo card + "Welcome to Quorum" heading
+  - Quick-action cards: Revenue Analysis, Cloud Business, Risk Factors,
+    AI Strategy — each pre-fills the chat input with a sample query
+  - Rotating "Try asking" pills: 6 questions cycle with a glow-pulse
+    animation every 3 seconds
+  - Feature highlights: 5 feature items with checkmarks
+
+All elements use staggered fade-in-up animations for a polished
+first-run experience.
+
+13.7 Theme Switching
+--------------------------------------------------------------------------------
+
+Dark mode is the default. The `index.html` inline script sets the
+`dark` class on `<html>` immediately (before React mounts) when no
+stored preference exists, preventing a flash of light theme.
+
+The Settings page and sidebar both have theme toggles that:
+  1. Toggle `document.documentElement.classList` (dark class)
+  2. Persist to localStorage
+  3. React context updates to reflect the change
+
+Tailwind CSS v4's `@custom-variant dark` system handles styling.
+
+13.8 API Communication (api/quorum.ts)
+--------------------------------------------------------------------------------
+
+All backend communication goes through `quorum.ts`:
+
+  - auth: login(), signup(), refresh(), getProfile()
+  - threads: listThreads(), createThread(), getThread(), deleteThread()
+  - ask: askQuestion(), askQuestionStream()
+  - documents: listDocuments()
+
+The HTTP client attaches the Authorization header with the Bearer token
+from AuthContext. 401 responses trigger automatic logout.
+
+For streaming, the EventSource API is used. For non-streaming, standard
+fetch with JSON serialization.
+
+
+================================================================================
+  14. AUTHENTICATION SYSTEM
+================================================================================
+
+14.1 Authentication Flow
+--------------------------------------------------------------------------------
+
+  1. User submits email + password via Login.tsx or Signup.tsx
+  2. Frontend sends POST /auth/login or POST /auth/signup
+  3. Backend calls Supabase Auth API:
+     - signup: `supabase.auth.signup({email, password})`
+     - login: `supabase.auth.signin({email, password})`
+  4. Supabase returns a JWT access_token + user metadata
+  5. Backend (auth.py on server) creates or syncs a Profile record
+     in PostgreSQL with the user's Supabase ID
+  6. Backend returns the access_token and user profile to frontend
+  7. Frontend stores the token in AuthContext (localStorage)
+  8. All subsequent requests include: Authorization: Bearer <token>
+
+14.2 Token Verification
+--------------------------------------------------------------------------------
+
+`get_current_profile` (in `deps.py`) is a FastAPI dependency that:
+
+  1. Extracts the Authorization header
+  2. Verifies the JWT via Supabase Admin API
+  3. Loads the Profile from PostgreSQL by the user ID in the token
+  4. Returns the Profile or raises HTTP 401
+
+This dependency is used on all protected endpoints. The Supabase
+client verifies the token's signature and expiration server-side.
+
+14.3 Rate Limiting
+--------------------------------------------------------------------------------
+
+`_check_rate_limit(request)` in `auth.py`:
+
+  - In-memory dict tracking request timestamps per IP
+  - Window: 60 seconds
+  - Max: 10 requests per window per IP
+  - Returns HTTP 429 if exceeded
+
+This is an in-memory (non-persistent) rate limiter, acceptable for
+single-server deployments. A production deployment would use Redis
+or a database-backed rate limiter.
+
+14.4 Endpoints
+--------------------------------------------------------------------------------
+
+  POST /auth/signup  - Register a new user (rate-limited)
+  POST /auth/login   - Log in (rate-limited)
+  POST /auth/refresh - Refresh an expired token
+  GET /auth/me       - Get current user profile (authenticated)
+
+The /me endpoint is used by the frontend on app load to verify the
+stored token is still valid and fetch the profile.
+
+
+================================================================================
+  15. API ENDPOINTS
+================================================================================
+
+15.1 Health
+--------------------------------------------------------------------------------
+
+  GET /health
+
+  Purpose: Returns server status and database connectivity.
+
+  Response:
+    {
+      "status": "ok" | "degraded",
+      "version": "0.1.0",
+      "database": "connected" | "disconnected",
+      "timestamp": "2026-06-12T12:00:00+00:00"
+    }
+
+  Internal: Attempts SELECT 1 on the database. If it fails, status=degraded.
+
+15.2 Auth Endpoints
+--------------------------------------------------------------------------------
+
+  POST /auth/signup
+    Body: { "email": str, "password": str }
+    Response: { "access_token": str, "user": { id, email, display_name, created_at } }
+    Rate-limited: 10 req/60s per IP
+
+  POST /auth/login
+    Body: { "email": str, "password": str }
+    Response: { "access_token": str, "user": { ... } }
+    Rate-limited: 10 req/60s per IP
+
+  POST /auth/refresh
+    Body: { "refresh_token": str }
+    Response: { "access_token": str, "user": { ... } }
+
+  GET /auth/me
+    Headers: Authorization: Bearer <token>
+    Response: { "id": str, "email": str, "display_name": str?, "created_at": str }
+
+15.3 Chat Endpoints
+--------------------------------------------------------------------------------
+
+  POST /chat/search
+    Body: { "query": str, "top_k": int (optional) }
+    Headers: Authorization: Bearer <token>
+    Response: { "results": [...SearchResultItem], "total": int }
+    Purpose: Raw search — returns chunks matching the query.
+    Internal: detect_ticker → hybrid_search → format results
+
+  POST /chat/threads
+    Body: { "title": str (optional) }
+    Headers: Authorization: Bearer <token>
+    Response: { "id": str, "title": str, "created_at": str }
+    Purpose: Create a new conversation thread.
+
+  GET /chat/threads
+    Headers: Authorization: Bearer <token>
+    Response: { "threads": [{ id, title, created_at }, ...] }
+    Purpose: List all threads for the current user, newest first.
+
+  GET /chat/threads/{id}
+    Headers: Authorization: Bearer <token>
+    Response: ThreadDetailResponse with full message history
+    Purpose: Load a thread's messages and citations.
+
+  DELETE /chat/threads/{id}
+    Headers: Authorization: Bearer <token>
+    Response: { "detail": "Thread deleted" }
+    Purpose: Delete a thread and all its messages/citations.
+
+  POST /chat/threads/{id}/ask
+    HEAD request:
+      Body: { "query": str, "top_k": int? }
+      Headers: Authorization: Bearer <token>
+    Internal (full pipeline):
+      - Save user message to DB
+      - detect_ticker, detect_intent
+      - If comparison: per-ticker hybrid_search
+      - If risk_diff: hybrid_search → filter Item 1A
+      - Else: hybrid_search
+      - filter_chunks_by_ticker (single-ticker only)
+      - validate_coverage → expand_coverage if gaps
+      - filter_expanded_to_single_ticker
+      - Load conversation history (last 6 messages)
+      - generate_answer(query, chunks, intent, history)
+        → extract_facts → validate_evidence → build_structured_answer
+        → LLM narrative (or rate-limit fallback)
+      - Save assistant message + citations to DB
+    Response:
+      { "answer": str, "citations": [...], "message_id": str }
+
+  POST /chat/threads/{id}/ask/stream
+    Same as /ask but returns SSE stream:
+      data: {"type": "token", "content": "partial text"}
+      data: {"type": "done", "citations": [...], "message_id": "..."}
+    Streaming saves partial answers in a `finally` block to survive
+    client disconnects.
+
+15.4 Document Endpoints
+--------------------------------------------------------------------------------
+
+  GET /documents
+    Headers: Authorization: Bearer <token>
+    Query params: ticker (optional), year (optional), limit (default 50)
+    Response: [...SourceDocument summary]
+    Purpose: List ingested documents with filter support.
+
+
+================================================================================
+  16. DATABASE DESIGN
+================================================================================
+
+16.1 Schema Overview
+--------------------------------------------------------------------------------
+
+The database uses PostgreSQL with the pgvector extension. Tables:
+
+  profiles              -- User accounts (synced from Supabase Auth)
+  source_documents      -- Ingested SEC filings
+  document_chunks       -- Chunked filing sections with embeddings
+  chat_threads          -- Conversation containers
+  chat_messages         -- Individual messages within threads
+  message_citations     -- Citation links from messages to chunks
+
+16.2 Table: profiles
+--------------------------------------------------------------------------------
+
+  Column         | Type         | Notes
+  ---------------+--------------+----------------------------------------
+  id             | VARCHAR(255) | PK — Supabase auth.users.id
+  email          | VARCHAR(320) | NOT NULL
+  display_name   | VARCHAR(255) | Nullable
+  created_at     | TIMESTAMPTZ  | Auto
+  updated_at     | TIMESTAMPTZ  | Auto
+
+16.3 Table: source_documents
+--------------------------------------------------------------------------------
+
+  Column         | Type         | Notes
+  ---------------+--------------+----------------------------------------
+  id             | UUID         | PK
+  user_id        | VARCHAR(255) | FK → profiles.id, nullable
+  filename       | VARCHAR(512) | e.g., "AAPL_2023.txt"
+  title          | VARCHAR(512) | e.g., "AAPL 10-K 2023"
+  source_url     | TEXT         | SEC.gov URL
+  filing_type    | VARCHAR(32)  | "10-K"
+  company_name   | VARCHAR(255) | "Apple Inc."
+  source_type    | VARCHAR(32)  | "sec_filing"
+  ticker         | VARCHAR(16)  | "AAPL"
+  fiscal_year    | INTEGER      | 2023
+  page_count     | INTEGER      | Number of sections extracted
+  content        | TEXT         | Full filing text (truncated 500K)
+  metadata_      | JSONB        | Extensible metadata
+  created_at     | TIMESTAMPTZ  | Auto
+  updated_at     | TIMESTAMPTZ  | Auto
+
+16.4 Table: document_chunks
+--------------------------------------------------------------------------------
+
+  Column         | Type         | Notes
+  ---------------+--------------+----------------------------------------
+  id             | UUID         | PK
+  document_id    | UUID         | FK → source_documents.id
+  chunk_index    | INTEGER      | Global index (unique per document)
+  content        | TEXT         | Chunk text (~4000 chars)
+  page_number    | INTEGER      | Nullable (1 for SEC filings)
+  section_title  | VARCHAR(512) | e.g., "Item 7. Management's Discussion"
+  token_count    | INTEGER      | Word count approximation
+  metadata_      | JSONB        | Extensible metadata
+  embedding      | VECTOR(768)  | nomic-embed-text embedding
+  created_at     | TIMESTAMPTZ  | Auto
+
+  Index: (document_id, chunk_index) UNIQUE
+  Index: embedding (ivfflat or hnsw) — optional for production scale
+
+16.5 Table: chat_threads
+--------------------------------------------------------------------------------
+
+  Column         | Type         | Notes
+  ---------------+--------------+----------------------------------------
+  id             | UUID         | PK
+  user_id        | VARCHAR(255) | FK → profiles.id, CASCADE
+  title          | VARCHAR(255) | Auto-generated or user-set
+  created_at     | TIMESTAMPTZ  | Auto
+  updated_at     | TIMESTAMPTZ  | Auto
+
+  Index: (user_id)
+
+16.6 Table: chat_messages
+--------------------------------------------------------------------------------
+
+  Column         | Type         | Notes
+  ---------------+--------------+----------------------------------------
+  id             | UUID         | PK
+  thread_id      | UUID         | FK → chat_threads.id, CASCADE
+  role           | VARCHAR(32)  | "user" or "assistant"
+  content        | TEXT         | Message body
+  metadata_      | JSONB        | AI SDK compatibility metadata
+  created_at     | TIMESTAMPTZ  | Auto
+  updated_at     | TIMESTAMPTZ  | Auto
+
+  Index: (thread_id)
+
+16.7 Table: message_citations
+--------------------------------------------------------------------------------
+
+  Column         | Type         | Notes
+  ---------------+--------------+----------------------------------------
+  id             | UUID         | PK
+  message_id     | UUID         | FK → chat_messages.id, CASCADE
+  chunk_id       | UUID         | FK → document_chunks.id, CASCADE
+  page_number    | INTEGER      | From source chunk
+  section_title  | VARCHAR(512) | From source chunk
+  excerpt        | TEXT         | First 500 chars of chunk content
+  metadata_      | JSONB        | Stores ticker + fiscal_year
+
+  Index: (message_id)
+
+16.8 Why PostgreSQL + pgvector
+--------------------------------------------------------------------------------
+
+  - Single database for all data types (structured + vectors):
+    eliminates operational complexity of managing a separate vector DB.
+
+  - ACID compliance: vector writes are transactional. If a document
+    ingestion fails mid-way, partial vector inserts are rolled back.
+
+  - SQL joins: chunk metadata (ticker, fiscal_year, section_title)
+    lives in the same queryable layer as the vectors. No application-
+    level joining between databases.
+
+  - Cost: pgvector is free and included with PostgreSQL. No per-vector
+    pricing from Pinecone/Weaviate.
+
+  - Familiar tooling: any PostgreSQL tool (psql, pgAdmin, DataGrip)
+    works for debugging and inspection.
+
+
+================================================================================
+  17. END-TO-END EXAMPLE WALKTHROUGH
+================================================================================
+
+17.1 The Query
+--------------------------------------------------------------------------------
+
+  "Compare Microsoft and Amazon cloud business revenue growth."
+
+17.2 Step-by-Step Trace
+--------------------------------------------------------------------------------
+
+  STEP 1: Frontend sends POST /chat/threads/{id}/ask
+  ──────────────────────────────────────────────────────
+    Body: {"query": "Compare Microsoft and Amazon cloud business revenue growth."}
+    This is a fresh thread (no prior messages).
+
+  STEP 2: Save user message
+  ──────────────────────────
+    INSERT INTO chat_messages (thread_id, role, content)
+    VALUES ('...', 'user', 'Compare Microsoft and Amazon cloud business revenue growth.')
+
+  STEP 3: Ticker Detection
+  ─────────────────────────
+    detect_tickers("Compare Microsoft and Amazon cloud business revenue growth.")
+      → finds "Microsoft" → "MSFT"
+      → finds "Amazon" → "AMZN"
+      → returns ["MSFT", "AMZN"]
+
+  STEP 4: Intent Detection
+  ─────────────────────────
+    detect_intent("Compare Microsoft and Amazon cloud business revenue growth.")
+      → checks "company_comparison" patterns:
+        "compare" → MATCH
+        AND 2 tickers detected → MATCH
+      → returns "company_comparison"
+
+  STEP 5: Retrieval (company_comparison path)
+  ────────────────────────────────────────────
+    For EACH ticker ("MSFT", "AMZN"):
+      effective_top_k = max(15, 40) = 40
+      search_depth = 80
+
+      hybrid_search(query, db, top_k=40, ticker="MSFT", search_depth=80)
+        → embed query with nomic-embed-text (768d)
+        → _vector_search: cosine distance, filter sd.ticker='MSFT', limit 80
+        → _fts_search: tsquery, filter sd.ticker='MSFT', limit 80
+        → apply_intent_boost (company_comparison boosts):
+          - "revenue" in content → 1.2x
+          - "results of operations" in section → 2.5x
+          - "net income" → 1.3x
+        → RRF fuse, take top 40
+        → Returns ~40 MSFT chunks
+
+      hybrid_search(query, db, top_k=40, ticker="AMZN", search_depth=80)
+        → same process, returns ~40 AMZN chunks
+
+    Combined: ~80 chunks (no ticker filter — company_comparison exempt)
+
+  STEP 6: Coverage Validation
+  ────────────────────────────
+    validate_coverage(query, chunks, "company_comparison")
+      → Both MSFT and AMZN have chunks ✓
+      → Multiple fiscal years present ✓
+      → No gap detected
+
+  STEP 7: Conversation History
+  ────────────────────────────
+    No prior messages (new thread) → history = []
+
+  STEP 8: Structured Extraction
+  ──────────────────────────────
+    generate_answer → build_structured_answer (company_comparison in STRUCTURED_INTENTS)
+
+    extract_facts(chunks) processes all 80 chunks:
+
+    For MSFT chunks:
+      - _parse_revenue_table: no "net sales by category" in MSFT
+        filings (MSFT uses different format), so this doesn't trigger
+      - _extract_segment_facts: SEGMENT_REGISTRY has "Intelligent Cloud (Azure)"
+        → searches for "azure", "intelligent cloud"
+        → finds "Intelligent Cloud revenue $60,000 $55,000 $50,000"
+        → extracts: Revenue: Intelligent Cloud (Azure), values per year
+      - _extract_known_metrics:
+        → "total revenue" → $211,915, $198,000, ...
+        → "net income" → $72,361, $68,000, ...
+
+    For AMZN chunks:
+      - _parse_revenue_table: no match
+      - _extract_segment_facts: SEGMENT_REGISTRY has "Amazon Web Services (AWS)"
+        → searches for "aws", "amazon web services"
+        → finds "AWS revenue $80,000 $75,000 $70,000"
+        → extracts: Revenue: Amazon Web Services (AWS)
+      - _extract_known_metrics:
+        → "total revenue" → $513,983, $485,000, ...
+
+    Deduplication resolves any conflicts between chunks.
+
+  STEP 9: Derived Calculations
+  ──────────────────────────────
+    compute_revenue_shares(fact_set):
+      → Share: Intelligent Cloud (Azure) = Azure_revenue / MSFT_Total_revenue
+      → Share: Amazon Web Services (AWS) = AWS_revenue / AMZN_Total_revenue
+
+    compute_growth_rates(combined.facts):
+      → MSFT Intelligent Cloud growth rates per year pair
+      → AMZN AWS growth rates per year pair
+      → Both companies' total revenue growth rates
+
+    compute_cagr(combined.facts):
+      → CAGR for Intelligent Cloud, AWS, total revenues
+
+  STEP 10: Evidence Validation
+  ──────────────────────────────
+    validate_evidence(query, chunks, "company_comparison", fact_set):
+      Level 1: chunks exist ✓ (80 chunks)
+      Level 2: ["MSFT", "AMZN"] both in chunks ✓
+      Level 3: multi-year → chunks span 2+ years ✓
+      Level 5: facts exist ✓ (segment + total revenue)
+
+  STEP 11: Segment Query Guard
+  ──────────────────────────────
+    _is_segment_query("Compare Microsoft and Amazon cloud business revenue growth.")
+      → "cloud" in "cloud business" → MATCH!
+      → checks segment_facts list
+      → MSFT Intelligent Cloud + AMZN AWS facts exist ✓
+      → PASS
+
+  STEP 12: Format Tables
+  ────────────────────────
+    format_structured_context(combined, "company_comparison", growth_rates, cagr_data):
+
+    Section 1: Revenue by Category ($M)
+      | Category | FY2022 | FY2023 | FY2024 |
+      |---|---|---|---|
+      | MSFT Revenue: Intelligent Cloud (Azure) | $60,000 | $66,000 | $72,000 |
+      | AMZN Revenue: Amazon Web Services (AWS) | $80,000 | $90,000 | $100,000 |
+
+    Section 2: Revenue Mix (%)
+      | Segment | FY2022 | FY2023 | FY2024 |
+      |---|---|---|---|
+      | MSFT Share: Intelligent Cloud (Azure) | 28.3% | 29.5% | 30.1% |
+      | AMZN Share: Amazon Web Services (AWS) | 15.6% | 16.2% | 16.8% |
+
+    Section 3: Key Financial Metrics
+      | Metric | FY2022 | FY2023 | FY2024 |
+      |---|---|---|---|
+      | MSFT Total Revenue | $211,915 | ... | ... |
+      | AMZN Total Revenue | $513,983 | ... | ... |
+
+    Section 4: YoY Growth Rates
+      | Metric | FY2022→FY2023 | FY2023→FY2024 |
+      |---|---|---|---|
+      | MSFT Intelligent Cloud (Azure) | 10.0% | 9.1% |
+      | AMZN Amazon Web Services (AWS) | 12.5% | 11.1% |
+
+    Section 5: CAGR
+      | Metric | Period | CAGR |
+      |---|---|---|
+      | MSFT Intelligent Cloud (Azure) | FY2022→FY2024 | 9.5% |
+      | AMZN Amazon Web Services (AWS) | FY2022→FY2024 | 11.8% |
+
+  STEP 13: LLM Narrative
+  ────────────────────────
+    System prompt: STRUCTURED_COMPARISON_NARRATIVE
+      "You are a senior equity research analyst performing a cross-company
+       comparison... DO NOT reproduce any table... DO NOT calculate..."
+
+    User message:
+      "Pre-computed Data Tables:
+       === STRUCTURED FINANCIAL DATA ===
+       [all tables above]
+       Question: Compare Microsoft and Amazon cloud business revenue growth."
+
+    The LLM generates narrative sections:
+      - Executive Summary
+      - Key Differences
+      - Growth & Profitability
+      - Analyst Takeaway
+
+    It references specific figures from the tables without reproducing
+    them: "AWS maintained higher absolute revenue ($100B vs $72B in FY2024)
+    but Intelligent Cloud grew at a comparable 9-10% annual rate."
+
+  STEP 14: Post-Processing
+  ──────────────────────────
+    check_sufficient_evidence(LLM_response, chunks)
+      → No hedging language detected ✓
+      → Response passes
+
+  STEP 15: Build Citations
+  ──────────────────────────
+    80 unique chunks → 80 citations with metadata + excerpts
+
+  STEP 16: Save to Database
+  ──────────────────────────
+    INSERT INTO chat_messages (thread_id, role='assistant', content=answer)
+    INSERT INTO message_citations × 80
+
+  STEP 17: Frontend Rendering
+  ────────────────────────────
+    Answer JSON received:
+      - Pre-computed tables rendered as HTML markdown tables
+      - LLM narrative rendered below tables
+      - Citations rendered as pill buttons
+      - Clicking a pill opens source drawer with excerpt + SEC.gov link
+
+
+================================================================================
+  18. DEBUGGING GUIDE
+================================================================================
+
+18.1 Retrieval Failures
+--------------------------------------------------------------------------------
+
+  Symptom: "No documents were retrieved for the query."
+
+  Check:
+    1. Is the backend running? → curl localhost:8000/health
+    2. Is Ollama running? → curl localhost:11434/api/tags
+    3. Are embeddings generated? → Check document_chunks.embedding IS NOT NULL
+    4. Are chunks filtered by ticker? → Check the detected ticker in logs
+    5. FTS query produced no terms? → Check _build_fts_query output
+
+  Fixes:
+    - Restart Ollama: systemctl restart ollama
+    - Re-run ingestion: uv run python scripts/ingest_html.py
+    - Check query: does it contain meaningful financial terms?
+    - Check _STOP_WORDS: are all query terms being filtered?
+
+18.2 Wrong Ticker Contamination
+--------------------------------------------------------------------------------
+
+  Symptom: Single-company query returns chunks from other tickers.
+
+  Check:
+    1. Logs show the detected ticker?
+    2. Is intent "company_comparison"? (skips ticker filter)
+    3. Did coverage expansion add back wrong-ticker chunks?
+    4. Are the ticker metadata on the chunks correct?
+
+  Defense layers:
+    Layer 1 (SQL): WHERE sd.ticker = :ticker in _vector_search and _fts_search
+    Layer 2 (post-fusion): filter_chunks_by_ticker in hybrid_search()
+    Layer 3 (post-expansion): filter_expanded_to_single_ticker in chat.py
+
+  Most common cause: Coverage expansion re-adds chunks without ticker
+  filter. Check that expand_coverage → filter_expanded_to_single_ticker
+  is running in the correct order.
+
+18.3 Missing Citations
+--------------------------------------------------------------------------------
+
+  Symptom: Answer has no citation pills.
+
+  Check:
+    1. Are chunks being retrieved? (count from logs)
+    2. Did _build_citations() produce entries?
+    3. Are citations being saved to DB?
+    4. Is the frontend receiving citations in the response?
+
+  Most common cause: LLM rate-limit path bypasses citation building.
+  Check that _build_citations() runs in both the normal and
+  rate-limit-exception paths of generate_answer().
+
+18.4 Empty Structured Tables
+--------------------------------------------------------------------------------
+
+  Symptom: Revenue by Category table shows all "—".
+
+  Check:
+    1. Do the chunks contain financial table markers? ("net sales by
+       category" or "products and services performance")
+    2. Does _extract_years() return values?
+    3. Does _parse_revenue_table() find category names after table_start?
+    4. Does _extract_values() find dollar amounts in the snippet?
+    5. Are the category names in CATEGORY_ORDER matching the filing?
+    6. For continuation rows: are the $ signs missing? (Bare numbers
+       followed by digits may be filtered by the negative lookahead)
+
+  Fix:
+    - Run extraction_test.py with the actual chunk content
+    - Check _extract_values output on the table snippet
+    - Verify _extract_years matches the correct pattern
+
+18.5 Authentication Issues
+--------------------------------------------------------------------------------
+
+  Symptom: 401 Unauthorized on protected endpoints.
+
+  Check:
+    1. Is the token expired? (Supabase JWTs expire after 1 hour by default)
+    2. Is the Authorization header correctly formatted?
+       "Bearer <token>" (not "token", not "JWT")
+    3. Is the Supabase service role key valid?
+    4. Is the local Profile created? (auth signup creates Profile)
+
+  Fix:
+    - Call POST /auth/refresh with the refresh_token
+    - Re-login to get a new token
+    - Check supabase_url and supabase_service_role_key in .env
+
+18.6 Frontend Rendering Bugs
+--------------------------------------------------------------------------------
+
+  Symptom: Tables not rendering, overflow issues, missing content.
+
+  Check:
+    1. Is the markdown valid? (Check the raw answer in network tab)
+    2. Is react-markdown receiving the full content?
+    3. Are overflow-x-auto containers present?
+    4. For dark mode: are dark: classes applied?
+    5. Console errors in browser developer tools
+
+  Most common issues:
+    - Missing remark-gfm plugin for table rendering
+    - Nested markdown inside code blocks
+    - Extremely long table rows without overflow wrapping
+
+18.7 Database Connection Issues
+--------------------------------------------------------------------------------
+
+  Symptom: "Failed to create database engine" on startup.
+
+  Check:
+    1. Is PostgreSQL running? → pg_isready
+    2. Are the DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD correct?
+    3. Is pgvector installed? → SELECT * FROM pg_extension
+    4. Is the Supabase pooler URL correct? (transaction vs session mode)
+
+  Fix:
+    - Use `psql` to test the connection string directly
+    - Check Supabase dashboard for pooler configuration
+    - Ensure migrations have been run: alembic upgrade head
+
+18.8 LLM Output Issues
+--------------------------------------------------------------------------------
+
+  Symptom: LLM responses are empty, gibberish, or rate-limited.
+
+  Check:
+    1. Is the Groq API key valid? → curl -H "Authorization: Bearer $KEY" ...
+    2. Is the rate limit exceeded? → Check Groq dashboard
+    3. Is the model name correct? → Compare with Groq available models
+    4. Is the prompt too long? (System + history + tables may exceed
+       context window)
+
+  Rate limit workaround:
+    - Wait 5-10 minutes for the free tier to reset
+    - Upgrade to a paid Groq plan
+    - The system gracefully degrades: pre-computed tables still render
+
+18.9 Using Logs for Debugging
+--------------------------------------------------------------------------------
+
+  Logs use structlog with structured JSON output. Key log events:
+
+    "Configuration loaded" — startup config
+    "Hybrid search" — query + top_k + ticker + intent
+    "Vector search results" — count + top_k
+    "FTS search results" — count + top_k
+    "RRF fusion complete" — input counts + output count
+    "Extraction complete" — total_facts + unique_tickers + metrics
+    "Pre-generation evidence validation failed" — validation detail
+    "Generating RAG answer" — query + chunk count + intent
+    "Groq rate limit reached" — rate limit hit
+    "Streaming ask complete" — thread + chunks + citations + length
+
+
+================================================================================
+  19. DESIGN DECISIONS AND EVOLUTION
+================================================================================
+
+This section documents the major engineering decisions made during the
+project's development, the problems they solved, and the files modified.
+
+19.1 Hybrid Retrieval (Vector + FTS + RRF)
+--------------------------------------------------------------------------------
+
+  Original Problem: Pure vector search missed exact keyword matches
+  (e.g., "Item 1A" didn't trigger semantic similarity for "risk
+  factors"). Pure FTS missed semantic matches ("what phones did Apple
+  sell?" versus "iPhone net sales").
+
+  Solution: Run both searches in parallel, fuse with RRF.
+
+  Files: retrieval.py (hybrid_search, _fuse_results, _vector_search,
+  _fts_search)
+
+  Outcome: Precision improved significantly — chunks are now relevant
+  both semantically AND by keyword.
+
+  RRF K parameter: Started with K=60 (standard default). Tuning this
+  could improve results. K=60 was chosen to mildly favor chunks
+  appearing in both lists over chunks appearing in only one.
+
+19.2 Structured Extraction Layer (Deterministic Financial Facts)
+--------------------------------------------------------------------------------
+
+  Original Problem: The LLM hallucinated financial numbers. It would
+  confidently report "iPhone revenue was $190 billion" when the actual
+  number was $205 billion, or transpose years.
+
+  Solution: Extract every number deterministically with regex. Compute
+  all derived metrics in Python. LLM only writes narrative.
+
+  Files: extraction.py (entire file — ~870 lines of pure extraction
+  logic)
+
+  Outcome: Six categories of hallucination eliminated:
+    - Wrong values (regex matches exactly what's in the text)
+    - Wrong years (10 extraction patterns cover all SEC formats)
+    - Wrong growth rates (computed from extracted values, not guessed)
+    - Wrong CAGR (same reason)
+    - Wrong revenue shares (computed from extracted values)
+    - Cross-year misalignment (years assigned by position in table)
+
+19.3 RRF Implementation (vs. Score Averaging)
+--------------------------------------------------------------------------------
+
+  Original Problem: Vector and FTS scores are on different scales and
+  cannot be meaningfully averaged. Simple score averaging gave too
+  much weight to one method or the other.
+
+  Solution: Use Reciprocal Rank Fusion, which normalizes by rank
+  position rather than raw score. K=60 provides a soft rank discount.
+
+  Files: retrieval.py (_fuse_results)
+
+  Outcome: Robust fusion without tuning. Works across different
+  embedding models and FTS configurations.
+
+19.4 Three-Layer Ticker Isolation
+--------------------------------------------------------------------------------
+
+  Original Problem: Cross-company contamination — "What was Microsoft's
+  Azure revenue?" returned Amazon AWS data because the embeddings were
+  semantically similar ("cloud revenue").
+
+  Solution:
+    Layer 1: SQL WHERE clause in both vector and FTS queries
+    Layer 2: Post-fusion filter_chunks_by_ticker()
+    Layer 3: Post-expansion filter_expanded_to_single_ticker()
+
+  Files: retrieval.py (vector_search, _fts_search, filter_chunks_by_ticker),
+  chat.py (ask_question), coverage.py (filter_expanded_to_single_ticker)
+
+  Outcome: Zero cross-company contamination in single-company queries,
+  confirmed by eval tests. Multi-company comparisons deliberately
+  bypass all three layers.
+
+19.5 Segment Query Handling
+--------------------------------------------------------------------------------
+
+  Original Problem: "What is AWS revenue?" returned total Amazon
+  revenue (because "revenue" matched FTS on "total revenue" chunks).
+
+  Solution: The _is_segment_query() guard checks for cloud segment
+  keywords and requires segment-level facts. Without them, the system
+  refuses to answer.
+
+  Files: workflows.py (_is_segment_query), extraction.py
+  (SEGMENT_REGISTRY, _extract_segment_facts)
+
+  Outcome: Segment queries either return segment-specific data or
+  an honest refusal. No more false total-company fallback.
+
+19.6 Honest Refusal System
+--------------------------------------------------------------------------------
+
+  Original Problem: The LLM would hallucinate rather than admit it
+  didn't know. "What was Tesla's revenue mix?" would return fabricated
+  numbers because the model "wanted to be helpful."
+
+  Solution: Five-level evidence validation gate. If any level fails,
+  the system returns a standardized insufficient-evidence response
+  and never calls the LLM.
+
+  Files: workflows.py (validate_evidence), rag.py
+  (check_sufficient_evidence), chat.py (coverage validation + expansion)
+
+  Outcome: The system truthfully declines ~15% of queries that lack
+  sufficient data (unknown tickers, single-year data for trend
+  questions, missing segments).
+
+19.7 Revenue Table Parsing Fix (table_start)
+--------------------------------------------------------------------------------
+
+  Original Problem: `_parse_revenue_table()` used `content.find(cat)`
+  starting from position 0. For AAPL chunk 59, this found "iPhone"
+  at position 252 (in the narrative MD&A text) instead of position
+  ~2880 (in the actual revenue table). The 200-char snippet from the
+  narrative position contained no dollar values, so the chunk produced
+  zero iPhone facts.
+
+  Root Cause: Content.find() searched the entire chunk, and "iPhone"
+  appeared in narrative text before the table.
+
+  Solution: Search for "net sales by category" first, then find
+  category names only from that position onward using
+  `content.find(cat, table_start)`.
+
+  Files: extraction.py (_parse_revenue_table)
+
+  Outcome: iPhone FY2022 revenue ($205,489) is now correctly extracted.
+  All 7 years of Apple revenue data render in the tables.
+
+19.8 Global Chunk Index Bug
+--------------------------------------------------------------------------------
+
+  Original Problem: Chunk indices were reset to 0 for each section,
+  so multiple chunks had chunk_index=0,1,2... making it impossible to
+  uniquely identify a chunk by its index.
+
+  Solution: Use a global counter incremented across all sections.
+
+  Files: ingest_html.py (chunk_into_sections)
+
+  Outcome: Each chunk has a globally unique chunk_index, enabling
+  unambiguous debugging and reference.
+
+19.9 Frontend UI Evolution
+--------------------------------------------------------------------------------
+
+  Original Problem: The original layout had a thin NavRail on the left
+  (icons only) that provided limited context. The thread list lived
+  inside Chat.tsx, causing state duplication and prop drilling.
+
+  Solution:
+    - NavRail removed, replaced by full sidebar (280px) with branding,
+      conversation list, and bottom navigation.
+    - ThreadContext provides shared thread state between Layout and Chat.
+    - Premium landing page replaces both empty states.
+    - All components use Tailwind dark: variants.
+
+  Files: Layout.tsx, ThreadContext.tsx, Chat.tsx, Settings.tsx, App.tsx
+
+   Outcome: Unified sidebar, no prop drilling, polished first-run
+   experience, dark mode default.
+
+19.10 Changelog (Recent Changes)
+-------------------------------------------------------------------------------
+
+This section records significant changes and additions to the product.
+
+| Date | Change | Files Affected |
+|------|--------|----------------|
+| June 2026 | Initial product build — full-stack SEC filing analysis platform with hybrid search RAG, deterministic financial extraction, LLM narrative overlay, streaming chat UI, Supabase auth, Docker deployment | Full repository |
+| June 2026 | Added self-signed TLS certs + nginx HTTPS config for local dev | `frontend/certs/`, `frontend/nginx.conf` |
+| June 2026 | Added Railway-optimized Dockerfiles and nginx config (plain HTTP, TLS at edge) | `frontend/Dockerfile.railway`, `frontend/nginx.conf.railway` |
+| June 2026 | Added frontend README with architecture overview | `frontend/README.md` |
+| June 2026 | Added .dockerignore for optimized builds | `frontend/.dockerignore` |
+| June 2026 | Added pipeline flow documentation with ASCII diagrams | `docs/pipeline-flow.md` |
+| June 2026 | Integrated pipeline flow diagrams + key files reference + intent routing table into technical documentation | `technical_documentation.txt` |
+
+
+===============================================================================
+   20. FUTURE IMPROVEMENTS
+================================================================================
+
+20.1 Better Table Rendering
+--------------------------------------------------------------------------------
+
+  Current: Standard HTML tables via react-markdown + remark-gfm.
+  Future: Interactive tables with sorting, filtering, and chart
+  integration (Chart.js, D3, or Recharts for inline sparklines).
+
+20.2 Multi-Document Support
+--------------------------------------------------------------------------------
+
+  Current: Only SEC 10-K HTML filings are ingested.
+  Future: Support 8-K, 10-Q, earnings call transcripts, PDF uploads,
+  and analyst reports. Each document type would need a custom parser.
+
+20.3 PDF Ingestion
+--------------------------------------------------------------------------------
+
+  Current: PyMuPDF is in dependencies but not fully utilized.
+  Future: Full PDF pipeline with table extraction using Camelot or
+  Tabula for structured data from PDF tables.
+
+20.4 Additional SEC Forms
+--------------------------------------------------------------------------------
+
+  Current: Only Form 10-K (annual report).
+  Future: Support 10-Q (quarterly), 8-K (material events), DEF 14A
+  (proxy statements), and Form 4 (insider trading).
+
+20.5 Agentic Workflows
+--------------------------------------------------------------------------------
+
+  Current: Single-turn Q&A with conversation history (last 6 messages).
+  Future: Multi-step agentic workflows:
+    - "Analyze Apple's revenue, then compare with Microsoft, then
+      summarize the key risks" — the system decomposes into sub-tasks
+    - Tool-use: the agent could search for additional data mid-response
+    - Iterative refinement: the agent could ask clarifying questions
+
+20.6 Graph-Based Retrieval
+--------------------------------------------------------------------------------
+
+  Current: Flat chunk retrieval with no relationship modeling.
+  Future: Knowledge graph connecting:
+    - Companies → segments → products
+    - Fiscal years → financial metrics → values
+    - Risk factors → evolution across years
+  Graph traversal would enable complex multi-hop queries like "Which
+  companies mentioned AI infrastructure risk in FY2024?"
+
+20.7 Better Evaluation Pipeline
+--------------------------------------------------------------------------------
+
+  Current: 52 regression eval queries, manually labeled.
+  Future:
+    - Automated assertion generation from filing data
+    - Numeric accuracy checks (exact match of extracted values)
+    - Citation recall (are all cited chunks actually relevant?)
+    - Continuous integration: eval suite runs on every PR
+
+20.8 Production Infrastructure
+--------------------------------------------------------------------------------
+
+  Current: Single-server, Docker Compose, in-memory rate limiter.
+  Future:
+    - Load-balanced multi-server deployment
+    - Redis-based rate limiting and caching
+    - Celery/Arq for async ingestion and batch processing
+    - Prometheus + Grafana for monitoring
+    - Automated DB backups and migration CI
+    - Staging environment for pre-deployment testing
+
+20.9 Enhanced Security
+--------------------------------------------------------------------------------
+
+  Current: Service role key in .env (dangerous for production).
+  Future:
+    - Secrets manager (Vault, AWS Secrets Manager)
+    - Row-Level Security (RLS) on PostgreSQL
+    - API key rotation automation
+    - Audit logging for all data access
+    - SOC2 compliance documentation
+
+20.10 Streaming UX Polish
+--------------------------------------------------------------------------------
+
+  Current: Basic SSE streaming with token-by-token rendering.
+  Future:
+    - Typing indicator animation
+    - Table streaming (render tables as they're computed)
+    - Citation highlighting (click a citation → highlight the
+      relevant answer section)
+
+
+================================================================================
+  21. CONCLUSION
+================================================================================
+
+Quorum demonstrates a production-grade approach to AI-powered financial
+document analysis by enforcing a strict separation of powers between
+deterministic computation and LLM generation.
+
+The core architectural insight is simple but profound: financial metrics
+are deterministic. Every number in an SEC filing can be extracted,
+validated, and computed in Python without any AI inference. By doing
+this extraction first and relegating the LLM to narrative overlay,
+Quorum eliminates the primary failure mode of financial AI —
+numerical hallucination.
+
+The system's key engineering achievements:
+
+  1. Hybrid search with RRF fusion provides best-of-both-worlds
+     retrieval: semantic understanding + keyword precision.
+
+  2. Three-layer ticker isolation guarantees zero cross-company
+     contamination in single-company queries.
+
+  3. Deterministic extraction with 10 year-parsing patterns,
+     frequency-based dedup, and section-aware chunking produces
+     reliable financial facts from diverse SEC formats.
+
+  4. Five-level evidence validation prevents the LLM from answering
+     without data, enforcing honest refusal over hallucination.
+
+  5. Segment query guards prevent the dangerous pattern of answering
+     "What is AWS revenue?" with total Amazon revenue.
+
+  6. Rate-limit resilience ensures the system remains functional
+     even when the LLM is unavailable.
+
+  7. A modern React frontend with dark mode, resizable sidebar,
+     streaming responses, and interactive citation cards provides
+     a polished user experience.
+
+The system handles 25 SEC filings across 5 major tech companies
+and 5 fiscal years, processes 52 regression eval queries, and
+maintains 138 passing unit tests. Every design decision — from
+K=60 in RRF to the three-layer ticker filter to the narrative
+overlay prompt — was motivated by a real failure mode observed
+during development.
+
+Quorum is ready for internal demo and evaluation. With additional
+investment in infrastructure, security, and data coverage, it could
+serve as the foundation for a production financial research platform.
