@@ -1,0 +1,47 @@
+[project]
+name = "quorum"
+version = "0.1.0"
+description = "AI-powered Document Copilot for SEC filing analysis"
+requires-python = ">=3.12"
+dependencies = [
+    "alembic>=1.14",
+    "fastapi>=0.115",
+    "httpx>=0.28",
+    "openai>=1.55",
+    "pgvector>=0.3",
+    "psycopg[binary]>=3.2",
+    "pydantic>=2.10",
+    "pydantic-settings>=2.7",
+    "PyMuPDF>=1.25",
+    "python-multipart>=0.0.18",
+    "redis[hiredis]>=5.2",
+    "sqlalchemy>=2.0",
+    "structlog>=25.1",
+    "supabase>=2.6",
+    "uvicorn[standard]>=0.34",
+]
+
+[tool.uv]
+add-bounds = "exact"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.25",
+    "pytest-timeout==2.4.0",
+    "ruff>=0.9",
+]
+
+[tool.pytest.ini_options]
+markers = [
+    "eval: regression evaluation suite (requires running backend + live DB)",
+]
+# Skip eval tests by default in fast unit-test runs:
+addopts = "-m 'not eval'"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

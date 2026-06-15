@@ -1,0 +1,8 @@
+[build]
+dockerfile = "Dockerfile"
+
+[[deploy.healthcheck]]
+path = "/health"
+interval_seconds = 15
+timeout_seconds = 10
+retries = 3
