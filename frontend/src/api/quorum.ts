@@ -88,6 +88,15 @@ export async function deleteThread(token: string, id: string): Promise<void> {
   })
 }
 
+export async function updateThread(token: string, id: string, title: string): Promise<Thread> {
+  const res = await fetch(`${BASE}/chat/threads/${id}`, {
+    method: 'PATCH',
+    headers: headers(token),
+    body: JSON.stringify({ title }),
+  })
+  return handle(res)
+}
+
 export async function healthCheck(): Promise<{ status: string }> {
   const res = await fetch(`${BASE}/health`)
   return handle(res)
