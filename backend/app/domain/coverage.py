@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from sqlalchemy.orm import Session
 
 from app.core.logging import logger
+from app.domain.extraction import extract_facts
 from app.domain.retrieval import (
     COMPANY_TICKER_MAP,
     RetrievedChunk,
@@ -149,6 +150,19 @@ def validate_coverage(
         has_gaps = True
         gap_parts.append("No chunks retrieved")
 
+    # Fact-level check: if chunks exist but none produced extractable
+    # financial data, flag as a gap so coverage expansion fires.
+    if requires_numerical and chunks and not has_gaps:
+        fact_set = extract_facts(chunks)
+        fact_tickers = fact_set.tickers()
+        for ticker in required_tickers:
+            if ticker not in fact_tickers:
+                missing_tickers.append(ticker)
+                gap_parts.append(
+                    f"{ticker} has chunks but zero extractable financial facts"
+                )
+                has_gaps = True
+
     report = CoverageReport(
         required_tickers=required_tickers,
         required_years=required_years,
@@ -215,6 +229,24 @@ def expand_coverage(
                 if c.chunk_id not in existing_ids:
                     existing_ids.add(c.chunk_id)
                     new_chunks.append(c)
+
+    # Metric-based expansion: if specific metrics are missing (e.g. R&D
+    # expense, segment revenue), search for chunks containing those terms.
+    if coverage.required_metrics:
+        for ticker in coverage.required_tickers:
+            if ticker not in coverage.missing_tickers:
+                for metric in coverage.required_metrics:
+                    expanded = hybrid_search(
+                        query=f"{ticker} {metric} financial table revenue",
+                        db=db,
+                        top_k=10,
+                        ticker=ticker,
+                        search_depth=25,
+                    )
+                    for c in expanded:
+                        if c.chunk_id not in existing_ids:
+                            existing_ids.add(c.chunk_id)
+                            new_chunks.append(c)
 
     if not chunks and not new_chunks:
         logger.warning("Coverage expansion produced no additional chunks")
