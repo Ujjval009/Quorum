@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
+import { useLocation } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { useAuth } from './AuthContext'
@@ -112,7 +113,8 @@ function CitationCard({ citation, index, onClick }: CitationCardProps) {
 
 export default function Chat() {
   const { token } = useAuth()
-  const { threads, threadId, loadThreads, setThreadId } = useThreads()
+  const { threads, threadId, loadThreads, setThreadId, renameThread } = useThreads()
+  const location = useLocation()
   const [messages, setMessages] = useState<Message[]>([])
   const [currentStream, setCurrentStream] = useState<string>('')
   const [typingState, setTypingState] = useState<string | null>(null)
@@ -123,6 +125,16 @@ export default function Chat() {
   const inputRef = useRef<HTMLInputElement>(null)
   const [sourceDrawer, setSourceDrawer] = useState<{ citation: Citation; messageId: string } | null>(null)
   const streamTidRef = useRef<string | null>(null)
+
+  // Auto-submit prefill query from Dashboard navigation state
+  useEffect(() => {
+    const state = location.state as { prefillQuery?: string } | null
+    if (state?.prefillQuery && !asking) {
+      const q = state.prefillQuery
+      window.history.replaceState({}, document.title)
+      ask(q)
+    }
+  }, [location.state])
 
   const scrollToBottom = useCallback(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -145,10 +157,10 @@ export default function Chat() {
     else { setMessages([]); setCurrentStream('') }
   }, [threadId, loadMessages])
 
-  async function ask() {
-    if (!query.trim() || !token || asking) return
-    const q = query.trim()
-    setQuery('')
+  async function ask(prefilledQuery?: string) {
+    const q = (prefilledQuery || query).trim()
+    if (!q || !token || asking) return
+    if (!prefilledQuery) setQuery('')
 
     let tid = threadId
     if (!tid) {
@@ -213,6 +225,7 @@ export default function Chat() {
                 setTypingState(null)
               } else if (data.type === 'done') {
                 if (streamTidRef.current !== tid) return
+                if (data.title) renameThread(tid, data.title)
                 const assistantMsg: Message = {
                   id: data.message_id,
                   role: 'assistant',
@@ -345,7 +358,7 @@ export default function Chat() {
                 className="flex-1 bg-transparent py-1.5 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none disabled:opacity-50"
               />
               <button
-                onClick={ask}
+                onClick={() => ask()}
                 disabled={!query.trim() || asking}
                 className="p-1.5 text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 disabled:opacity-30 disabled:cursor-not-allowed transition-all shrink-0"
               >
