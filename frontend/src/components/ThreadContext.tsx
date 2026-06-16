@@ -11,6 +11,7 @@ interface ThreadContextValue {
   loadThreads: () => Promise<void>
   createThread: () => Promise<Thread | undefined>
   deleteThread: (id: string) => void
+  renameThread: (id: string, title: string) => void
 }
 
 const ThreadContext = createContext<ThreadContextValue | null>(null)
@@ -47,8 +48,12 @@ export function ThreadProvider({ children }: { children: ReactNode }) {
     api.deleteThread(token!, id).catch(() => {})
   }
 
+  function renameThread(id: string, title: string) {
+    setThreads(prev => prev.map(t => t.id === id ? { ...t, title } : t))
+  }
+
   return (
-    <ThreadContext.Provider value={{ threads, threadId, loadingThreads, setThreadId, loadThreads, createThread, deleteThread }}>
+    <ThreadContext.Provider value={{ threads, threadId, loadingThreads, setThreadId, loadThreads, createThread, deleteThread, renameThread }}>
       {children}
     </ThreadContext.Provider>
   )
