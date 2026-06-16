@@ -324,15 +324,21 @@ def _parse_revenue_table(
     # This prevents content.find() from matching narrative mentions of
     # category names that appear before the actual financial table.
     table_start = 0
-    for marker in ("net sales by category", "products and services performance"):
+    for marker in (
+        "net sales by category", "products and services performance",
+        "disaggregation of revenue", "disaggregated revenue",
+        "revenue by source", "segment revenue", "revenue by segment",
+        "net sales by segment", "revenue by reportable segment",
+    ):
         idx = content.lower().find(marker)
         if idx != -1:
             table_start = idx
             break
 
     facts: list[FinancialFact] = []
+    content_lower = content.lower()
     for cat in CATEGORY_ORDER:
-        idx = content.find(cat, table_start)
+        idx = content_lower.find(cat.lower(), table_start)
         if idx == -1:
             continue
         snippet = content[idx:idx + 200]
@@ -354,11 +360,34 @@ def _parse_revenue_table(
 
 
 def _in_table_row(text: str, pos: int) -> bool:
-    """Check if the position is within a table-like row.
+    """Check if the position is within a table-like region.
 
     A table row contains either pipe characters (markdown table),
     dollar amounts in a row, or a label followed by aligned numbers.
+    First checks the keyword's own line.  If that line has no table
+    indicators (e.g. AMZN's ``AWS\\n$90,757 …``), checks the content
+    immediately ahead for clustered dollar values.
     """
+
+    def _is_table_snippet(s: str) -> bool:
+        if "|" in s:
+            return True
+        dollar_positions = [i for i, c in enumerate(s) if c == "$"]
+        if len(dollar_positions) >= 2:
+            max_gap = max(
+                dollar_positions[i] - dollar_positions[i-1]
+                for i in range(1, len(dollar_positions))
+            )
+            if max_gap <= 25:
+                return True
+            return False
+        if "$" in s and len(re.findall(r"\b[\d,]{4,}\b", s)) >= 2:
+            return True
+        if len(re.findall(r"\b[\d,]{4,}\b", s)) >= 2:
+            return True
+        return False
+
+    # ── Check the keyword's own line ──
     line_start = text.rfind("\n", 0, pos)
     if line_start == -1:
         line_start = 0
@@ -366,20 +395,15 @@ def _in_table_row(text: str, pos: int) -> bool:
     if line_end == -1:
         line_end = len(text)
     line = text[line_start:line_end]
+    if _is_table_snippet(line):
+        return True
 
-    # Pipe-delimited table row
-    if "|" in line:
+    # ── If the keyword's line is bare (e.g. "AWS"), check the next ~180
+    #    chars for table structure (the values are on the next line). ──
+    next_window = text[line_start:line_start + 200]
+    if _is_table_snippet(next_window):
         return True
-    # Multiple dollar signs (tabular dollar amounts)
-    if line.count("$") >= 2:
-        return True
-    # Single $ with 2+ 4-digit numbers in same line
-    if "$" in line and len(re.findall(r"\b[\d,]{4,}\b", line)) >= 2:
-        return True
-    # Bare-number table row: label followed by 2+ comma-separated 4-digit values
-    # e.g., "Intelligent Cloud 87,907 74,965 59,728"
-    if len(re.findall(r"\b[\d,]{4,}\b", line)) >= 2:
-        return True
+
     return False
 
 
@@ -417,12 +441,23 @@ def _extract_segment_facts(
                     continue
 
                 # Additional guard: the keyword must be followed by a value
-                # within 15 chars. Table rows look like "Intelligent Cloud 60,080"
-                # (number right after), while narrative says "Intelligent Cloud
-                # Revenue increased" (word after). This prevents false matches
-                # on long single-line chunks where table data appears later.
-                after = content[idx + len(keyword):idx + len(keyword) + 15]
-                if not re.match(r"\s*[$]?\s*[\d,(]", after):
+                # within 60 chars. AMZN format uses "AWS segment revenue: $90,757"
+                # (descriptive text between keyword and number), while narrative
+                # says "AWS revenue increased" (no number for many more chars).
+                # 60 chars is long enough for AMZN format but still catches
+                # purely narrative mentions that go on for entire paragraphs.
+                after = content[idx + len(keyword):idx + len(keyword) + 60]
+                if not re.search(r"\s*[$]?\s*[\d,(]", after):
+                    search_from = idx + 1
+                    continue
+                # If next digit is beyond 40 chars, check it's in a table row
+                # (not buried in narrative). Find the first relevant character.
+                value_match = re.search(r"[\d$]", after)
+                if value_match and value_match.start() > 40:
+                    match_pos = idx + len(keyword) + value_match.start()
+                    if not _in_table_row(content, match_pos):
+                        search_from = idx + 1
+                        continue
                     search_from = idx + 1
                     continue
 
@@ -583,17 +618,13 @@ def _extract_known_metrics(
                     line_end = len(content)
                 snippet = content[idx:line_end + 1]
                 values = _extract_eps_values(snippet)
-            elif is_total:
-                snippet = content[idx:idx + 250]
-                values = _extract_values(snippet)
             else:
                 # For non-total labels (e.g., "revenue", "net sales"),
-                # restrict to values on the same line only to avoid
-                # picking up sub-category numbers from following table rows.
-                line_end = content.find("\n", idx)
-                if line_end == -1:
-                    line_end = len(content)
-                snippet = content[idx:line_end + 1]
+                # use a 250-char window to capture multi-row financial
+                # tables where the label is on one line and values on
+                # the next (e.g. AMZN income statement format after
+                # HTML stripping: "Revenue\n$574,785 $513,983").
+                snippet = content[idx:idx + 250]
                 values = _extract_values(snippet)
             if not values:
                 continue
@@ -653,7 +684,13 @@ def extract_facts(chunks: list[RetrievedChunk]) -> FactSet:
         chunk_id = chunk.chunk_id
         section_title = chunk.section_title
 
-        if "net sales by category" in content.lower() or "products and services performance" in content.lower():
+        c_lower = content.lower()
+        if any(marker in c_lower for marker in (
+            "net sales by category", "products and services performance",
+            "disaggregation of revenue", "disaggregated revenue",
+            "revenue by source", "segment revenue", "revenue by segment",
+            "net sales by segment", "revenue by reportable segment",
+        )):
             table_facts = _parse_revenue_table(content, doc_year, ticker, chunk_id, section_title)
             fact_set.facts.extend(table_facts)
 
@@ -897,7 +934,7 @@ def format_structured_context(
     # -- Section 1: Revenue by Category ($M) — absolute dollars --
     rev_row_metrics = [m for m in revenue_metrics if m.startswith("Revenue:")]
 
-    if rev_row_metrics and intent in ("revenue_mix", "financial_metrics", "company_comparison"):
+    if rev_row_metrics and intent in ("revenue_mix", "financial_metrics", "company_comparison", "business_segment"):
         col_headers = ["Category"] + [f"FY{y}" for y in years]
         rows = _build_multi_ticker_rows(fact_set, rev_row_metrics, years, tickers)
         parts.extend(_format_dollar_table("Revenue by Category", col_headers, rows, "$ millions"))
@@ -905,7 +942,7 @@ def format_structured_context(
     # -- Section 2: Revenue Mix (%) — share of total --
     share_row_metrics = [m for m in share_metrics]
 
-    if share_row_metrics and intent in ("revenue_mix", "company_comparison"):
+    if share_row_metrics and intent in ("revenue_mix", "company_comparison", "business_segment"):
         col_headers = ["Segment"] + [f"FY{y}" for y in years]
         rows = _build_multi_ticker_rows(fact_set, share_row_metrics, years, tickers)
         parts.extend(_format_dollar_table("Revenue Mix", col_headers, rows, "%", "{:.1f}%"))
@@ -913,13 +950,13 @@ def format_structured_context(
     # -- Section 3: Key Financial Metrics ($M) — company-level absolute metrics --
     financial_metrics = [m for m in revenue_metrics if not m.startswith("Revenue:")]
 
-    if financial_metrics and intent in ("financial_metrics", "company_comparison"):
+    if financial_metrics and intent in ("financial_metrics", "company_comparison", "business_segment"):
         col_headers = ["Metric"] + [f"FY{y}" for y in years]
         rows = _build_multi_ticker_rows(fact_set, financial_metrics, years, tickers)
         parts.extend(_format_dollar_table("Key Financial Metrics", col_headers, rows, "$ millions"))
 
     # -- Section 4: YoY Growth (%) — only for ABSOLUTE metrics, only in financial or comparison intents --
-    if growth_rates and intent in ("financial_metrics", "company_comparison"):
+    if growth_rates and intent in ("financial_metrics", "company_comparison", "business_segment"):
         parts.append("## Year-over-Year Growth Rates (%)")
         parts.append("")
         growth_headers = _growth_header(growth_rates)
@@ -934,7 +971,7 @@ def format_structured_context(
         parts.append("")
 
     # -- Section 5: CAGR (%) — only for ABSOLUTE metrics, only in financial or comparison intents --
-    if cagr_data and intent in ("financial_metrics", "company_comparison"):
+    if cagr_data and intent in ("financial_metrics", "company_comparison", "business_segment"):
         parts.append("## Compound Annual Growth Rate (CAGR)")
         parts.append("")
         parts.append("| Metric | Period | CAGR |")
