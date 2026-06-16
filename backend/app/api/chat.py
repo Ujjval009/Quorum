@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
@@ -16,12 +17,14 @@ from app.domain.coverage import (
 )
 from app.domain.rag import generate_answer, generate_answer_stream
 from app.domain.retrieval import (
+    COMPANY_TICKER_MAP,
     detect_intent,
     detect_ticker,
     detect_tickers,
     filter_chunks_by_ticker,
     hybrid_search,
 )
+from app.domain.titles import generate_title
 from app.domain.workflows import STRUCTURED_INTENTS, check_sufficient_evidence
 from app.models.base import get_db
 from app.models.chat import ChatMessage, ChatThread, MessageCitation
@@ -35,6 +38,7 @@ from app.schemas.chat import (
     ThreadDetailResponse,
     ThreadListResponse,
     ThreadResponse,
+    ThreadUpdate,
 )
 from app.schemas.retrieval import SearchRequest, SearchResponse, SearchResultItem
 
@@ -176,6 +180,26 @@ def get_thread(
     )
 
 
+@router.patch("/threads/{thread_id}")
+def update_thread(
+    thread_id: str,
+    body: ThreadUpdate,
+    db: Session = Depends(get_db),
+    profile: Profile = Depends(get_current_profile),
+) -> ThreadResponse:
+    logger.info("Updating thread title", thread_id=thread_id, user_id=profile.id)
+    thread = db.query(ChatThread).filter(
+        ChatThread.id == thread_id,
+        ChatThread.user_id == profile.id,
+    ).first()
+    if not thread:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found")
+    thread.title = body.title
+    db.commit()
+    db.refresh(thread)
+    return _thread_to_response(thread)
+
+
 @router.delete("/threads/{thread_id}")
 def delete_thread(
     thread_id: str,
@@ -216,6 +240,18 @@ def ask_question(
     db.commit()
     db.refresh(user_msg)
 
+    # Auto-generate title from first user message
+    thread_title: str | None = None
+    prior_count = (
+        db.query(ChatMessage)
+        .filter(ChatMessage.thread_id == thread.id, ChatMessage.id != user_msg.id)
+        .count()
+    )
+    if prior_count == 0:
+        thread_title = generate_title(body.query)
+        thread.title = thread_title
+        db.commit()
+
     ticker = detect_ticker(body.query)
     intent = detect_intent(body.query)
 
@@ -225,8 +261,20 @@ def ask_question(
         effective_top_k = max(body.top_k or 15, 40)
         chunks: list = []
         for t in tickers:
+            # Generate a ticker-specific query for each company so the
+            # vector search and FTS surface the right financial tables.
+            # E.g. for AMZN: "aws segment revenue financial performance AMZN"
+            company_query = body.query
+            company_name = next(
+                (name for name, tk in COMPANY_TICKER_MAP.items()
+                 if tk == t and re.search(r"\b" + re.escape(name) + r"\b", body.query.lower())),
+                None,
+            )
+            if not company_name:
+                company_name = t.lower()
+                company_query = f"{company_name} {body.query}"
             t_chunks = hybrid_search(
-                query=body.query,
+                query=company_query,
                 db=db,
                 top_k=effective_top_k,
                 ticker=t,
@@ -248,7 +296,7 @@ def ask_question(
         if item_1a_chunks:
             chunks = item_1a_chunks
     else:
-        effective_top_k = body.top_k
+        effective_top_k = max(body.top_k or 25, 25)
         if intent in STRUCTURED_INTENTS:
             effective_top_k = max(effective_top_k, 80)
             logger.debug(
@@ -260,7 +308,7 @@ def ask_question(
             db=db,
             top_k=effective_top_k,
             ticker=ticker,
-            search_depth=80 if intent in STRUCTURED_INTENTS else None,
+            search_depth=80 if intent in STRUCTURED_INTENTS else 75,
         )
 
     if ticker and detect_tickers(body.query) == [ticker] and intent != "company_comparison":
@@ -327,6 +375,7 @@ def ask_question(
             for c in citations
         ],
         message_id=str(assistant_msg.id),
+        title=thread_title,
     )
 
 
@@ -353,6 +402,18 @@ def ask_question_stream(
     db.commit()
     db.refresh(user_msg)
 
+    # Auto-generate title from first user message
+    thread_title: str | None = None
+    prior_count = (
+        db.query(ChatMessage)
+        .filter(ChatMessage.thread_id == thread.id, ChatMessage.id != user_msg.id)
+        .count()
+    )
+    if prior_count == 0:
+        thread_title = generate_title(body.query)
+        thread.title = thread_title
+        db.commit()
+
     ticker = detect_ticker(body.query)
     intent = detect_intent(body.query)
 
@@ -362,8 +423,17 @@ def ask_question_stream(
         effective_top_k = max(body.top_k or 15, 40)
         chunks: list = []
         for t in tickers:
+            company_query = body.query
+            company_name = next(
+                (name for name, tk in COMPANY_TICKER_MAP.items()
+                 if tk == t and re.search(r"\b" + re.escape(name) + r"\b", body.query.lower())),
+                None,
+            )
+            if not company_name:
+                company_name = t.lower()
+                company_query = f"{company_name} {body.query}"
             t_chunks = hybrid_search(
-                query=body.query,
+                query=company_query,
                 db=db,
                 top_k=effective_top_k,
                 ticker=t,
@@ -385,7 +455,7 @@ def ask_question_stream(
         if item_1a_chunks:
             chunks = item_1a_chunks
     else:
-        effective_top_k = body.top_k
+        effective_top_k = max(body.top_k or 25, 25)
         if intent in STRUCTURED_INTENTS:
             effective_top_k = max(effective_top_k, 80)
             logger.debug(
@@ -397,7 +467,7 @@ def ask_question_stream(
             db=db,
             top_k=effective_top_k,
             ticker=ticker,
-            search_depth=80 if intent in STRUCTURED_INTENTS else None,
+            search_depth=80 if intent in STRUCTURED_INTENTS else 75,
         )
 
     if ticker and detect_tickers(body.query) == [ticker] and intent != "company_comparison":
@@ -495,6 +565,7 @@ def ask_question_stream(
             'type': 'done',
             'citations': citations_data,
             'message_id': str(assistant_msg.id),
+            'title': thread_title,
         }
         yield f"data: {json.dumps(done_response)}\n\n"
 
