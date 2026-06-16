@@ -193,6 +193,9 @@ _INTENT_PATTERNS: dict[str, set[str]] = {
         "services segment", "segment revenue",
         "segment profit", "business segment",
         "segment operating", "reportable segment",
+        "revenue by segment", "segment breakdown",
+        "revenue per segment", "by segment",
+        "segment results",
     },
     "ai_disclosure": {
         "ai disclosure", "artificial intelligence",
@@ -201,6 +204,9 @@ _INTENT_PATTERNS: dict[str, set[str]] = {
         "llm", "large language model", "deep learning",
         "neural network", "ai capabilities", "ai investment",
         "ai strategy", "ai mention", "ai references",
+        "ai-related", "ai related", "investments in ai",
+        "ai spending", "ai capex", "spending on ai",
+        "ai expenditure", "ai platform",
     },
 }
 
@@ -230,6 +236,9 @@ _SECTION_BOOST_MAP: dict[str, list[tuple[str, float]]] = {
         ("management discussion", 2.0),
         ("financial statements", 1.5),
         ("financial condition", 1.5),
+        ("item 1", 1.5),
+        ("item 1a", 1.5),
+        ("business", 1.3),
     ],
     "business_segment": [
         ("business segment", 2.5),
@@ -302,6 +311,7 @@ _INTENT_BOOST_PHRASES: dict[str, list[tuple[str, float]]] = {
         ("capital expenditures", 1.8),
         ("ai infrastructure", 2.0),
         ("data center", 1.5),
+        ("ai", 1.5),
         # ── Phase 3: Enhanced AI & Capex boost phrases ──
         ("large language model", 2.0),
         ("llm", 2.0),
