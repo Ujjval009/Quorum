@@ -43,12 +43,17 @@ class ThreadDetailResponse(BaseModel):
     created_at: datetime
 
 
+class ThreadUpdate(BaseModel):
+    title: str
+
+
 class AskRequest(BaseModel):
     query: str
-    top_k: int = 6
+    top_k: int = 25
 
 
 class AskResponse(BaseModel):
     answer: str
     citations: list[CitationItem]
     message_id: str
+    title: str | None = None
