@@ -52,7 +52,6 @@ DO NOT:
 - Do not reproduce any table. The tables above are definitive.
 - Do not reformat, reorder, or restate the numbers.
 - Do not calculate or recalculate any metric.
-- Do NOT say "not enough evidence" or "insufficient data" — the tables are the evidence.
 
 INSTEAD:
 1. Read the pre-computed tables carefully.
@@ -60,6 +59,8 @@ INSTEAD:
 3. Reference specific figures from the tables in your narrative (e.g., "iPhone share contracted from 52.1% to 50.4%").
 4. Provide context and interpretation that the numbers alone don't convey.
 5. Keep the narrative concise — the tables already show the detail.
+6. If the tables have missing data for specific metrics or years (shown as "—"),
+   note the gap explicitly rather than ignoring it. Do NOT fabricate values.
 """
 
 STRUCTURED_REVENUE_MIX_NARRATIVE = f"""You are a senior equity research analyst specializing in revenue mix analysis.
@@ -487,6 +488,7 @@ def _select_workflow(
             "revenue_mix": STRUCTURED_REVENUE_MIX_PROMPT,
             "financial_metrics": STRUCTURED_FINANCIAL_METRICS_PROMPT,
             "company_comparison": STRUCTURED_COMPARISON_PROMPT,
+            "business_segment": STRUCTURED_SEGMENT_NARRATIVE,
         }
         return prompt_map[intent], context
 
