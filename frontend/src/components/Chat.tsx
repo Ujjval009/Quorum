@@ -125,6 +125,7 @@ export default function Chat() {
   const inputRef = useRef<HTMLInputElement>(null)
   const [sourceDrawer, setSourceDrawer] = useState<{ citation: Citation; messageId: string } | null>(null)
   const streamTidRef = useRef<string | null>(null)
+  const newThreadRef = useRef(false)
 
   // Auto-submit prefill query from Dashboard navigation state
   useEffect(() => {
@@ -145,16 +146,24 @@ export default function Chat() {
   const loadMessages = useCallback(async (id: string) => {
     if (!token) return
     setLoadingMessages(true)
-    setCurrentStream('')
+    if (!newThreadRef.current) setCurrentStream('')
     try {
       const data = await api.getThread(token, id)
-      setMessages(data.messages)
+      if (!newThreadRef.current) setMessages(data.messages)
     } catch {} finally { setLoadingMessages(false) }
   }, [token])
 
   useEffect(() => {
-    if (threadId) loadMessages(threadId)
-    else { setMessages([]); setCurrentStream('') }
+    if (threadId) {
+      if (newThreadRef.current) {
+        newThreadRef.current = false
+        return
+      }
+      loadMessages(threadId)
+    } else {
+      setMessages([])
+      setCurrentStream('')
+    }
   }, [threadId, loadMessages])
 
   async function ask(prefilledQuery?: string) {
@@ -168,6 +177,7 @@ export default function Chat() {
         const t = await api.createThread(token, q.length > 80 ? q.slice(0, 80) + '…' : q)
         loadThreads()
         tid = t.id
+        newThreadRef.current = true
         setThreadId(t.id)
       } catch { return }
     }
