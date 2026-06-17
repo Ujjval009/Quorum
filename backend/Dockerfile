@@ -19,6 +19,7 @@ RUN addgroup --system --gid 1001 quorum && \
     chown -R quorum:quorum /app
 
 ENV UV_CACHE_DIR=/tmp/uv-cache
+ENV UV_LINK_MODE=copy
 USER quorum
 
 EXPOSE 8000
