@@ -7,7 +7,7 @@
 - **Database:** PostgreSQL + pgvector (Supabase)
 - **Auth:** Supabase Auth
 - **LLM:** Groq (Llama 3.3 70B)
-- **Embeddings:** Ollama `nomic-embed-text` (local)
+- **Embeddings:** HuggingFace Inference API (`sentence-transformers/multi-qa-mpnet-base-dot-v1`); Ollama fallback for local dev
 - **Rate Limiting:** Redis (shared across workers; in-memory fallback)
 
 ## Repo layout
@@ -65,21 +65,25 @@ quorum/
 └── frontend/
     ├── package.json
     ├── Dockerfile
-    ├── Dockerfile.railway          # Railway-optimised (no certs, plain HTTP)
+    ├── vercel.json                 # Vercel SPA routing rewrites
+    ├── Dockerfile
     ├── nginx.conf                  # Local: HTTPS + self-signed certs
-    ├── nginx.conf.railway          # Railway: plain HTTP (TLS at edge)
     ├── certs/
     │   ├── localhost.crt           # Self-signed TLS cert for local dev
     │   └── localhost.key
     └── src/
         ├── App.tsx
         ├── components/
-        │   ├── Chat.tsx            # Main chat interface + streaming
+        │   ├── Chat.tsx            # Main chat interface + streaming + landing
+        │   ├── ThreadContext.tsx    # Thread list + active thread state
         │   ├── AuthContext.tsx
-        │   ├── Login.tsx
-        │   ├── Signup.tsx
-        │   └── Documents.tsx
+        │   ├── AuthPage.tsx        # Login + Signup
+        │   ├── Dashboard.tsx       # Marketing/landing page
+        │   ├── Layout.tsx          # Sidebar + content layout
+        │   ├── Documents.tsx
+        │   └── Settings.tsx
         ├── api/quorum.ts
+        ├── types/index.ts
         └── lib/supabase.ts
 ```
 
@@ -125,10 +129,11 @@ uv run python scripts/ingest_html.py               # ingest SEC filings
 # Docker (local dev — includes Redis)
 docker compose up --build
 
-# Railway (production)
-# Backend: build from backend/Dockerfile + railway.toml
-# Frontend: build from frontend/Dockerfile.railway
-# Add PostgreSQL + Redis plugins in Railway dashboard
+# Production (Render + Vercel)
+# Backend: deploy from backend/Dockerfile on Render, port 8000
+# Frontend: deploy from frontend/ on Vercel, framework=Vite, output=dist
+# Add env vars on Render: EMBEDDING_PROVIDER=huggingface, HF_TOKEN, etc.
+# vercel.json handles SPA routing
 ```
 
 ## Production hardening checklist

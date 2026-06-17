@@ -176,10 +176,11 @@ Goal: 5 senior analysts can use it for a week and report ≥3 hours saved per an
 
 ---
 
-## Phase 9 — Deployment (Railway)
+## Phase 9 — Deployment (Render + Vercel)
 
-- [X] Railway: backend service (Uvicorn, env vars, `ALLOWED_ORIGINS`)
-- [X] Railway: frontend service (Vite build, `VITE_*` env vars at build time)
+- [X] Backend: deploy `backend/Dockerfile` on Render, port 8000, healthcheck at `/health`
+- [X] Frontend: deploy `frontend/` on Vercel, framework=Vite, SPA rewrites via `vercel.json`
+- [X] Env vars: `EMBEDDING_PROVIDER=huggingface`, `HF_TOKEN`, Supabase + Groq credentials
 - [X] Supabase: re-enable email confirmation for production if disabled during dev
 - [X] Run `alembic upgrade head` against production Supabase (direct connection)
 - [X] Run ingestion against production database

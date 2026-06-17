@@ -12,6 +12,7 @@ This is the FastAPI service for Document Quorum. Read [../AGENTS.md](../AGENTS.m
 - Supabase Python client (DB + auth)
 - SQLAlchemy models + Alembic migrations for database schema changes
 - OpenAI SDK for LLM & embeddings
+- `huggingface-hub` for HuggingFace Inference API (production embeddings)
 - `redis[hiredis]` for rate limiting
 - Supabase `pgvector` for semantic search and Postgres full-text search for keyword retrieval. Hybrid search runs vector and full-text queries separately, then fuses ranked results in Python with Reciprocal Rank Fusion.
 - `structlog` for logging
@@ -59,6 +60,7 @@ backend/
     │   ├── logging.py         # JSONRenderer (production) / ConsoleRenderer (dev)
     │   └── rate_limiter.py    # Redis-backed sliding-window rate limiter
     ├── domain/
+    │   ├── embeddings.py      # Embedding providers (Ollama + HuggingFace)
     │   ├── extraction.py      # Financial fact extraction (Python, not LLM)
     │   ├── rag.py             # Answer generation + citation building
     │   ├── retrieval.py       # Hybrid search + RRF fusion + metadata filtering

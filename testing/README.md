@@ -4,25 +4,23 @@
 
 | Suite | File | Count | Marker | Requires |
 |-------|------|-------|--------|----------|
-| Fast unit tests | `tests/test_*.py` (excluding eval_suite) | 138 (unit) + 19 (retrieval eval) | `not eval` | Nothing (mocked) |
+| Fast unit tests | `tests/test_*.py` (excluding eval_suite) | 138 | `not eval` | Nothing (mocked) |
 | Retrieval quality | `tests/test_retrieval_eval.py` | 19 | none | Running backend + live DB |
 | Regression eval | `tests/eval_suite.py` | 52 parametrized + 9 standalone | `eval` | Running backend + live DB + LLM API key |
 
 ## Quick start
 
 ```bash
-# Fast checks (no network, no LLM)
-cd backend && uv run pytest -v -m "not eval"
-
-# Full regression eval suite
-cd backend && uv run pytest tests/eval_suite.py -v -m eval
+cd backend
+uv run pytest -v -m "not eval"           # Fast checks (138 tests, no network)
+uv run pytest tests/eval_suite.py -v -m eval   # Full eval suite
 ```
 
 ## Test structure
 
-### Parametrized cases (43 tests)
+### Parametrized cases (52 tests)
 
-All registered via `ALL_EVAL_CASES` at `eval_suite.py:136` and dispatched through `test_eval_query`:
+All registered via `ALL_EVAL_CASES` and dispatched through `test_eval_query`:
 
 | Category | Cases | What it tests |
 |----------|-------|---------------|
@@ -31,7 +29,7 @@ All registered via `ALL_EVAL_CASES` at `eval_suite.py:136` and dispatched throug
 | `COMPARISON_CASES` | cmp1–cmp6, ie2 | Cross-company side-by-side tables |
 | `RISK_FACTOR_CASES` | risk1–risk4 | Risk factor diff across years |
 | `AI_DISCLOSURE_CASES` | ai1–ai5 | AI terminology evolution over time |
-| `INSUFFICIENT_EVIDENCE_CASES` | ie1, ie3 | Queries with no data → graceful degredation |
+| `INSUFFICIENT_EVIDENCE_CASES` | ie1, ie3 | Queries with no data → graceful degradation |
 | `BUSINESS_SEGMENT_CASES` | seg1–seg5 | Segment-level revenue, mix, growth |
 | `GENERAL_CASES` | gen1–gen7 | Unstructured narrative answers |
 
@@ -49,9 +47,8 @@ All registered via `ALL_EVAL_CASES` at `eval_suite.py:136` and dispatched throug
 | `test_citations_have_metadata` | Every citation has ticker, year, section_title |
 | `test_answer_has_sections` | General answers have Executive Summary + Key Findings |
 
-### What each test validates
+### What each parametrized test validates
 
-Every parametrized case checks:
 1. **Answer non-empty**
 2. **Insufficient evidence** — correct graceful response when data is absent
 3. **Structured data marker** — `=== STRUCTURED FINANCIAL DATA` present for structured intents
@@ -61,31 +58,9 @@ Every parametrized case checks:
 7. **Single-ticker isolation** — no cross-company contamination for single-ticker queries
 8. **Citation excerpt** — every citation has non-empty excerpt
 
-Standalone tests add: structured output format, cross-company citation correctness, section headers in narrative, citation metadata completeness.
+## LLM Providers
 
-## Results
-
-### 2026-06-13 — Final: **52/52 PASSING**
-
-| Run | Config | Passed | Failed | Skipped |
-|-----|--------|--------|--------|---------|
-| 1 | Groq `llama-3.3-70b-versatile` | 8 | 0 | 44 (rate limited) |
-| 2 | Groq `groq/compound-mini` | 8 | 0 | 44 (rate limited) |
-| 3 | Groq `llama-3.3-70b-versatile` (next day) | 24 | 4 (fm2, ie2, seg2, seg5) | 16 |
-| 4 | **OpenRouter** `meta-llama/llama-3.3-70b-instruct` | **52** | **0** | **0** |
-
-### Fixes applied during runs
-
-| Test | Issue | Fix |
-|------|-------|-----|
-| `fm2` | NVDA citation leaked into Apple-only CAGR query | Added `"iphone"` to `COMPANY_TICKER_MAP` in `retrieval.py` |
-| `ie2` | Expected `insufficient_evidence` but system produced structured cloud data | Moved test from `INSUFFICIENT_EVIDENCE_CASES` to `COMPARISON_CASES` |
-| `seg2` | AWS segment query produced narrative-only output (missing structured tables) | Added `business_segment` to `STRUCTURED_INTENTS` + added `STRUCTURED_SEGMENT_NARRATIVE` prompt |
-| `seg5` | Same as seg2 + "data center" not recognized as segment keyword | Added `"data center"` and `"segment growth"` to `_SEGMENT_QUERY_KEYWORDS` |
-
-## Rate limiting & providers
-
-### Groq free tier limits
+### Groq (default)
 
 | Model | RPM | RPD | TPM | TPD |
 |-------|-----|-----|-----|-----|
@@ -93,41 +68,37 @@ Standalone tests add: structured output format, cross-company citation correctne
 
 The full eval suite consumes ~50–80k tokens. With Groq free tier's 100k TPD, you get **one full run per day**.
 
-### OpenRouter (production recommendation)
-
-Switch to OpenRouter for production / CI:
+### OpenRouter (alternative)
 
 ```bash
-# .env
 GROQ_API_KEY=sk-or-v1-<your-key>
 GROQ_LLM_MODEL=meta-llama/llama-3.3-70b-instruct
 LLM_BASE_URL=https://openrouter.ai/api/v1
 ```
 
-The config in `config.py` reads `LLM_BASE_URL` and falls back to `https://api.groq.com/openai/v1` when empty.
+`config.py` checks `LLM_BASE_URL` first — when empty, defaults to `https://api.groq.com/openai/v1`.
 
-## Switching providers
+## Eval results
 
-The `.env` file controls the LLM provider. To switch between Groq and OpenRouter:
+| Run | Provider | Model | Passed | Failed |
+|-----|----------|-------|--------|--------|
+| 1 | Groq | `llama-3.3-70b-versatile` | 8 | 0 (44 rate-limited) |
+| 2 | Groq | `compound-mini` | 8 | 0 (44 rate-limited) |
+| 3 | Groq | `llama-3.3-70b-versatile` | 24 | 4 (fm2, ie2, seg2, seg5) |
+| 4 | **OpenRouter** | `meta-llama/llama-3.3-70b-instruct` | **52** | **0** |
 
-```bash
-# ── OpenRouter (current) ──
-GROQ_API_KEY=sk-or-v1-<your-key>
-GROQ_LLM_MODEL=meta-llama/llama-3.3-70b-instruct
-LLM_BASE_URL=https://openrouter.ai/api/v1
+### Fixes applied during runs
 
-# ── Groq (original) ──
-GROQ_API_KEY=gsk-<your-groq-key>
-GROQ_LLM_MODEL=llama-3.3-70b-versatile
-LLM_BASE_URL=                           # empty = uses default Groq URL
-```
+| Test | Issue | Fix |
+|------|-------|-----|
+| `fm2` | NVDA citation leaked into Apple-only CAGR query | Added `"iphone"` to `COMPANY_TICKER_MAP` |
+| `ie2` | Expected insufficient_evidence but produced structured cloud data | Moved from `INSUFFICIENT_EVIDENCE_CASES` to `COMPARISON_CASES` |
+| `seg2` | AWS segment query produced narrative-only output (missing structured tables) | Added `business_segment` to `STRUCTURED_INTENTS` + `STRUCTURED_SEGMENT_NARRATIVE` prompt |
+| `seg5` | Same as seg2 + "data center" not recognized as segment keyword | Added `"data center"` and `"segment growth"` to `_SEGMENT_QUERY_KEYWORDS` |
 
-`config.py` checks `LLM_BASE_URL` first — when empty, it defaults to `https://api.groq.com/openai/v1`.
-
-## CI integration
+## CI config
 
 ```yaml
-# .github/workflows/test.yml
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -142,58 +113,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
       - run: uv sync
-      - name: Fast unit tests
-        run: uv run pytest -v -m "not eval"
-      - name: Eval suite
-        run: uv run pytest tests/eval_suite.py -v -m eval
+      - run: uv run pytest -v -m "not eval"
+      - run: uv run pytest tests/eval_suite.py -v -m eval
         env:
           GROQ_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           GROQ_LLM_MODEL: meta-llama/llama-3.3-70b-instruct
           LLM_BASE_URL: https://openrouter.ai/api/v1
-```
-
-## Architecture
-
-```
-pytest -m "not eval"                    pytest -m eval
-       │                                       │
-       ▼                                       ▼
-  Unit tests                          api_client fixture
-  (no deps, no net)                    ┌──────────────────┐
-                                       │ POST /auth/login │
-                                       │ (once per sess.) │
-                                       └──────┬───────────┘
-                                              │
-                ┌─────────────────────────────┐
-                │  POST /chat/threads/{id}/ask │
-                └──────────┬──────────────────┘
-                           │
-                ┌──────────▼──────────┐
-                │  generate_answer()   │
-                │  rag.py:42           │
-                └──────────┬──────────┘
-                           │
-              ┌────────────┴────────────┐
-              │                         │
-     structured intents          non-structured
-     (revenue_mix,               (general, ai,
-      financial_metrics,          risk, segment)
-      comparison)
-              │                         │
-              ▼                         ▼
-    build_structured_answer()    build_workflow_context()
-    workflows.py:372             workflows.py:439
-              │                         │
-              ▼                         ▼
-    extract_facts()              _format_workflow_context()
-    (deterministic,              (raw chunk context → LLM)
-     no LLM)
-              │
-              ▼
-    format_structured_context()
-    (tables first)
-              │
-              ▼
-    LLM narrative overlay
-    (tables + narrative)
 ```

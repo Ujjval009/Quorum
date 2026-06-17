@@ -17,7 +17,7 @@ cd frontend && npm install && npm run dev
 docker compose up --build
 ```
 
-Requires: PostgreSQL (Supabase), [Groq API key](https://console.groq.com), Ollama with `nomic-embed-text`.
+Requires: PostgreSQL (Supabase), [Groq API key](https://console.groq.com), HuggingFace token.
 
 ---
 
@@ -30,7 +30,7 @@ Requires: PostgreSQL (Supabase), [Groq API key](https://console.groq.com), Ollam
 └────────┘   └──────────┘   └───────────┘   └──────────┘   └────────┘
 ```
 
-1. **Ingest** — Parse SEC 10-K HTML into sections, chunk, embed (Ollama), store in pgvector.
+1. **Ingest** — Parse SEC 10-K HTML into sections, chunk, embed (HuggingFace `sentence-transformers/multi-qa-mpnet-base-dot-v1`), store in pgvector.
 2. **Retrieve** — Hybrid search (vector + full-text, fused via RRF) with metadata pre-filtering.
 3. **Extract** — Revenue, CAGR, margins, mix — computed deterministically via Python regex, never by the LLM.
 4. **Generate** — Pre-computed tables first, then LLM narrative (Executive Summary, Key Findings, Analysis, Takeaway).
@@ -57,14 +57,14 @@ Requires: PostgreSQL (Supabase), [Groq API key](https://console.groq.com), Ollam
 
 | Layer | Tech |
 |-------|------|
-| Backend | Python 3.14 + FastAPI |
+| Backend | Python 3.12 + FastAPI |
 | Frontend | React 19 + TypeScript 6 + Vite 8 |
 | Database | PostgreSQL + pgvector (Supabase) |
 | Auth | Supabase Auth |
 | ORM | SQLAlchemy + Alembic |
 | LLM | Groq (Llama 3.3 70B) |
-| Embeddings | Ollama `nomic-embed-text` |
-| Rate limiting | Redis (shared across workers) |
+| Embeddings | HuggingFace Inference API (`sentence-transformers/multi-qa-mpnet-base-dot-v1`) |
+| Rate limiting | Redis (shared across workers; in-memory fallback) |
 
 ---
 
@@ -79,7 +79,7 @@ Requires: PostgreSQL (Supabase), [Groq API key](https://console.groq.com), Ollam
 | Docker | Full stack (optional) | `docker compose up` |
 | Supabase project | DB + Auth | [supabase.com](https://supabase.com) |
 | Groq API key | LLM | [console.groq.com](https://console.groq.com) |
-| Ollama | Embeddings | `ollama pull nomic-embed-text` |
+| HuggingFace token | Embeddings | [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) |
 
 ### Backend
 
@@ -105,27 +105,38 @@ npm run dev                             # → http://localhost:5173
 docker compose up --build               # Redis → Backend → Frontend
 ```
 
-### Railway
-
-Two services, same project:
-
-| Service | Dockerfile | Port | Plugins |
-|---------|-----------|------|---------|
-| Backend | `backend/Dockerfile` | 8000 | PostgreSQL, Redis |
-| Frontend | `frontend/Dockerfile.railway` | 80 | — |
-
-Railway handles TLS at the edge; no certs needed.
-
----
-
-## Ingesting filings
+### Ingesting filings
 
 ```bash
 cd backend
 uv run python scripts/ingest_html.py
 ```
 
-Reads `data/downloads/manifest.json`, parses SEC 10-K items, chunks, embeds, and writes to the database. Idempotent.
+Reads `data/downloads/manifest.json`, parses SEC 10-K items, chunks, batch-embeds via HuggingFace, and writes to the database.
+
+---
+
+## Deployment
+
+### Backend (Render)
+
+| Config | Value |
+|--------|-------|
+| Build | `backend/Dockerfile` |
+| Port | 8000 |
+| Health | `/health` |
+| Env | `EMBEDDING_PROVIDER=huggingface`, `HF_TOKEN=...`, all Supabase + Groq vars |
+
+### Frontend (Vercel)
+
+| Config | Value |
+|--------|-------|
+| Framework | Vite |
+| Build command | `npm run build` |
+| Output dir | `dist` |
+| Env | `VITE_API_URL=https://backend.onrender.com` |
+
+SPA routing handled by `vercel.json` rewrites rule.
 
 ---
 
@@ -156,7 +167,6 @@ uv run pytest tests/eval_suite.py -v -m eval
 | **Connection pool** | `pool_size=20, max_overflow=10, pool_timeout=30` |
 | **N+1 prevention** | `selectinload` for thread → messages → citations |
 | **Input limits** | 10 MB request body cap; 120s LLM timeout |
-| **HTTPS** | Self-signed cert + HSTS + TLS 1.2/1.3 (replace with Let's Encrypt for prod) |
 | **Security headers** | CSP, X-Frame-Options, X-Content-Type-Options, Permissions-Policy |
 | **Logging** | JSON structured (`QUORUM_ENV=production`); correlation IDs on every request |
 | **Container** | Non-root `quorum` user in Dockerfile |
@@ -184,9 +194,11 @@ All configuration lives in `backend/.env`. The full list:
 | `ALLOWED_ORIGINS` | — | `http://localhost:5173` | CORS origins (comma-separated) |
 | `GROQ_LLM_MODEL` | — | `llama-3.3-70b-versatile` | LLM model name |
 | `LLM_BASE_URL` | — | `https://api.groq.com/openai/v1` | Override for OpenRouter etc. |
-| `EMBEDDING_PROVIDER` | — | `ollama` | Embedding provider (`ollama` or `openai`) |
-| `EMBEDDING_DIMENSIONS` | — | `768` | Vector dimensions (768 for nomic-embed-text) |
-| `OLLAMA_BASE_URL` | — | `http://localhost:11434/v1` | Ollama API endpoint |
+| `EMBEDDING_PROVIDER` | — | `huggingface` | Embedding provider (`huggingface` or `ollama`) |
+| `EMBEDDING_MODEL` | — | `sentence-transformers/multi-qa-mpnet-base-dot-v1` | Embedding model name |
+| `EMBEDDING_DIMENSIONS` | — | `768` | Vector dimensions |
+| `HF_TOKEN` | — | — | HuggingFace API token |
+| `OLLAMA_BASE_URL` | — | `http://localhost:11434/v1` | Ollama API endpoint (fallback) |
 | `QUORUM_ENV` | — | `development` | `production` enables JSON logging |
 
 ---
@@ -200,7 +212,8 @@ All configuration lives in `backend/.env`. The full list:
 | **Metadata pre-filtering, not post-filtering** | Extracting tickers and fiscal years from the query and applying them as SQL `WHERE` clauses prevents cross-company contamination before ranking — much cheaper than filtering 100+ results after fusion. |
 | **Redis-backed rate limiting** | In-memory dicts reset on restart and don't share across workers. Redis sorted sets provide accurate sliding windows that survive deploys and scale horizontally. |
 | **Structured tables before LLM narrative** | The most valuable output (numbers) is computed first and always returned, even if the LLM call fails. The narrative is secondary. |
-| **Self-signed certs in nginx** | HTTPS is non-negotiable even in dev (auth tokens travel in headers). Self-signed certs are baked into the Docker image; replace with Let's Encrypt for production public domains. |
+| **HuggingFace over Ollama for production** | HF Inference API requires no local GPU, works serverless, and uses the same `sentence-transformers` model (768d). Ollama remains a local dev fallback. |
+| **Batch embedding during ingestion** | HuggingFace's API supports batching, reducing the number of API calls by ~100x vs individual embedding calls. |
 
 ---
 
@@ -208,6 +221,7 @@ All configuration lives in `backend/.env`. The full list:
 
 ```
 quorum/
+├── AGENTS.md
 ├── backend/
 │   ├── app/
 │   │   ├── main.py              # FastAPI entrypoint + startup validation
@@ -217,6 +231,7 @@ quorum/
 │   │   │   ├── extraction.py    # Financial fact extraction (Python, not LLM)
 │   │   │   ├── rag.py           # Answer generation + citation building
 │   │   │   ├── retrieval.py     # Hybrid search + RRF + metadata filters
+│   │   │   ├── embeddings.py    # Ollama/HuggingFace embedding providers
 │   │   │   ├── coverage.py      # Evidence coverage validation
 │   │   │   └── workflows.py     # Intent-aware prompt selection
 │   │   ├── core/
@@ -233,47 +248,13 @@ quorum/
 │   └── pyproject.toml
 ├── frontend/
 │   ├── src/                     # React components, API client, Supabase client
+│   ├── vercel.json              # Vercel deployment config (SPA rewrites)
 │   ├── Dockerfile
-│   ├── Dockerfile.railway
-│   ├── nginx.conf               # Local HTTPS with self-signed certs
-│   ├── nginx.conf.railway       # Railway (plain HTTP, TLS at edge)
-│   ├── certs/                   # Self-signed TLS certs
+│   ├── nginx.conf
 │   └── package.json
 ├── docker-compose.yml           # Backend + frontend + Redis
 └── data/downloads/              # Raw SEC HTML filings + manifest.json
 ```
-
----
-
-## Architecture overview
-
-```
-┌──────────┐     ┌───────────┐     ┌────────────┐
-│ Browser  │────→│  FastAPI  │────→│ PostgreSQL │
-│ React    │     │  Uvicorn  │     │ + pgvector │
-│ Vite     │     │  Redis    │     │ Supabase   │
-└──────────┘     └─────┬─────┘     └────────────┘
-                       │
-               ┌───────▼───────┐
-               │   Groq LLM    │
-               │  (or OpenRouter)  │
-               └───────────────┘
-                       │
-               ┌───────▼───────┐
-               │   Ollama      │
-               │ nomic-embed-text│
-               └───────────────┘
-```
-
-**Request flow:**
-1. Browser authenticates via Supabase Auth (JWT)
-2. User query → Vite dev server / nginx → FastAPI
-3. FastAPI verifies JWT, extracts ticker/year from query text
-4. Hybrid search: pgvector cosine similarity + Postgres full-text → RRF fusion
-5. Deterministic extraction of financial metrics from returned chunks
-6. Structured tables are rendered (always returned, even on LLM failure)
-7. LLM generates narrative answer grounded in citations
-8. Answer + citations streamed back to browser; persisted to DB
 
 ---
 

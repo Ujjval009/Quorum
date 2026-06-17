@@ -1,127 +1,68 @@
 # Backend setup
 
-This project uses a separate Python + FastAPI backend because the server is responsible for AI and document-processing work, not just basic web CRUD. Python gives us the strongest ecosystem for ingestion, chunking, embeddings, retrieval, evaluation, and LLM workflows. Keeping this logic behind a dedicated API also keeps the frontend focused on the user experience while the backend owns data access, orchestration, and grounding.
+This project uses a separate Python + FastAPI backend because the server is responsible for AI and document-processing work, not just basic web CRUD. Python gives us the strongest ecosystem for ingestion, chunking, embeddings, retrieval, evaluation, and LLM workflows.
 
-## Init (from empty `backend/`)
+## Init
 
 ```bash
-
 cd backend
-
 uv sync
-
-uv add fastapi uvicorn pydantic pydantic-settings httpx structlog openai supabase pydantic-ai sqlalchemy alembic "psycopg[binary]" pgvector
-
-uv add --dev pytest ruff
-
-```
-
-## Database migrations
-
-Alembic owns database schema changes for this project. SQLAlchemy models describe the app tables, and Alembic migrations apply those changes to Supabase Postgres.
-
-Initialize Alembic once from `backend/`:
-
-```bash
-
-uv run alembic init alembic
-
-```
-
-Configure `alembic/env.py` to import the app's SQLAlchemy metadata and read the direct database URL from `app.config.settings`. Use the direct/session Supabase database connection, not the transaction pooler URL, for migrations.
-
-Create a migration after changing SQLAlchemy models:
-
-```bash
-
-uv run alembic revision --autogenerate -m "add document tables"
-
-```
-
-Always review the generated migration. Add explicit operations for Supabase/Postgres features that autogenerate cannot reliably infer:
-
-- `create extension if not exists vector`
-- `vector(1536)` columns
-- generated `tsvector` columns
-- HNSW and GIN indexes
-- RLS enablement and policies
-
-Apply migrations:
-
-```bash
-
-uv run alembic upgrade head
-
 ```
 
 ## Run
 
 ```bash
-
 cd backend
-
 uv sync
-
 uv run alembic upgrade head
-
-uv run uvicorn app.main:app --reload
-
+uv run uvicorn app.main:app --reload   # → http://localhost:8000
 ```
 
-## Imports (`from app...`)
+## Database migrations
 
-`backend/app` is installed as an editable package by `uv sync`, so `from app...` imports work from uvicorn, direct Python execution, tests, and Jupyter kernels that use the backend venv.
+Alembic owns database schema changes. SQLAlchemy models describe the app tables, and Alembic migrations apply those changes to Supabase Postgres.
 
-The `[build-system]` and `[tool.hatch.build.targets.wheel]` sections in `backend/pyproject.toml` tell uv how to install the local `app/` package. Without that package install, imports depend on the current working directory or a manually configured `PYTHONPATH`, which is fragile in notebooks and IDE run buttons.
-
-Preferred API server command:
+Create a migration after changing models:
 
 ```bash
+uv run alembic revision --autogenerate -m "description"
+```
 
+Always review the generated migration. Add explicit operations for Postgres/Supabase features:
+
+- `create extension if not exists vector`
+- `vector(768)` columns
+- generated `tsvector` columns
+- HNSW and GIN indexes
+
+Apply:
+
+```bash
+uv run alembic upgrade head
+```
+
+## Embedding providers
+
+Two providers are supported:
+
+| Provider | When | Env vars |
+|----------|------|----------|
+| **HuggingFace** | Production (Render) | `EMBEDDING_PROVIDER=huggingface`, `HF_TOKEN=...` |
+| **Ollama** | Local dev fallback | `EMBEDDING_PROVIDER=ollama`, `OLLAMA_BASE_URL=http://localhost:11434/v1` |
+
+Ingestion batch-embeds all chunks for each filing into a single API call.
+
+## Ingesting filings
+
+```bash
 cd backend
-
-uv run uvicorn app.main:app --reload
-
+uv run python scripts/ingest_html.py
 ```
 
-Direct file execution also works:
+## Testing
 
 ```bash
-
-cd backend
-
-uv run python app/main.py
-
-```
-
-For Jupyter, install and select the backend kernel:
-
-```bash
-
-cd backend
-
-uv run python -m ipykernel install --user --name document-copilot-backend --display-name "Document Copilot Backend"
-
-```
-
-Then notebooks can import backend modules:
-
-```python
-
-from app.config import settings
-
-```
-
-## Sample SEC data
-
-From the repo root (stdlib-only script, no backend env needed):
-
-```bash
-
-uv run data/download.py
-
-```
-
-```
-
+uv run pytest -v -m "not eval"        # 138 unit tests
+uv run pytest tests/eval_suite.py -v -m eval  # full eval (requires LLM key)
+uv run ruff check .                   # lint
 ```

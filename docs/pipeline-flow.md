@@ -27,12 +27,12 @@ Transforms raw SEC 10-K HTML filings into searchable chunks with embeddings.
 
 | Step | File | What happens |
 |------|------|--------------|
-| **1. Read manifest** | `scripts/ingest_html.py:211` | Reads `data/downloads/manifest.json` — lists ticker, year, local HTML path for each filing |
-| **2. Parse HTML** | `scripts/ingest_html.py:102-125` | `SECHTMLParser` strips script/style tags via Python `HTMLParser`, removes XBRL `ix:` namespace junk |
-| **3. Extract sections** | `scripts/ingest_html.py:128-149` | Regex `_ITEM_PATTERN` splits text on `Item 1.`, `Item 1A.`, `Item 7.`, etc. Maps raw labels to canonical titles via `_COMMON_SECTION_TITLES` dictionary |
-| **4. Chunk** | `scripts/ingest_html.py:152-205` | Splits each section into ~4000-char chunks with 200-char overlap on sentence/paragraph boundaries. Falls back to 800-word chunks for dense text |
-| **5. Embed** | `scripts/ingest_html.py:267` | Each chunk → Ollama `nomic-embed-text` → 768-dim vector. Failed chunks are re-tried at 2000 chars |
-| **6. Store** | `scripts/ingest_html.py:244-295` | `SourceDocument` (filing metadata) → 1 row. `DocumentChunk` (text + embedding + metadata) → N rows per filing. Committed in batch per document |
+| **1. Read manifest** | `scripts/ingest_html.py` | Reads `data/downloads/manifest.json` — lists ticker, year, local HTML path for each filing |
+| **2. Parse HTML** | `scripts/ingest_html.py` | `SECHTMLParser` strips script/style tags via Python `HTMLParser`, removes XBRL `ix:` namespace junk |
+| **3. Extract sections** | `scripts/ingest_html.py` | Regex `_ITEM_PATTERN` splits text on `Item 1.`, `Item 1A.`, `Item 7.`, etc. Maps raw labels to canonical titles via `_COMMON_SECTION_TITLES` dictionary |
+| **4. Chunk** | `scripts/ingest_html.py` | Splits each section into ~4000-char chunks with 200-char overlap on sentence/paragraph boundaries. Falls back to 800-word chunks for dense text |
+| **5. Embed** | `scripts/ingest_html.py` | Batch-embeds all chunks via configured provider → 768-dim vector. Default: HuggingFace `sentence-transformers/multi-qa-mpnet-base-dot-v1`. Fallback: Ollama `nomic-embed-text` |
+| **6. Store** | `scripts/ingest_html.py` | `SourceDocument` (filing metadata) → 1 row. `DocumentChunk` (text + embedding + metadata) → N rows per filing. Committed in batch per document |
 
 ### Schema (PostgreSQL + pgvector)
 
@@ -201,7 +201,7 @@ The intent detection determines which generation path is taken:
 | File | Role |
 |------|------|
 | `scripts/ingest_html.py` | SEC HTML → `source_documents` + `document_chunks` |
-| `app/domain/embeddings.py` | `generate_embedding()` — Ollama nomic-embed-text |
+| `app/domain/embeddings.py` | `generate_embedding()` — HuggingFace or Ollama provider |
 | `app/domain/retrieval.py` | `extract_filters()`, `_vector_search()`, `_fts_search()`, `hybrid_search()`, `detect_intent()` |
 | `app/domain/extraction.py` | `extract_facts()`, `compute_cagr()`, `compute_growth_rates()`, `compute_revenue_shares()` |
 | `app/domain/coverage.py` | `validate_coverage()`, `expand_coverage()` |

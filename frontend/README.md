@@ -6,8 +6,11 @@ React 19 + TypeScript 6 + Vite 8 SPA for the Quorum SEC Filing Analyst.
 
 - React 19 with TypeScript
 - Vite 8 for dev server and build
+- React Router v7 for routing
 - Supabase Auth (browser client)
-- Nginx for production serving (see `nginx.conf` for local HTTPS, `nginx.conf.railway` for Railway)
+- Tailwind CSS for styling
+- Lucide React for icons
+- React Markdown + remark-gfm for rendering
 
 ## Setup
 
@@ -15,6 +18,7 @@ React 19 + TypeScript 6 + Vite 8 SPA for the Quorum SEC Filing Analyst.
 npm install
 npm run dev        # local dev server on http://localhost:5173
 npm run build      # production build to dist/
+npm run lint       # lint check
 ```
 
 ## Dev proxy
@@ -23,8 +27,8 @@ Vite proxies `/api` requests to `http://localhost:8000` (the backend), stripping
 
 ## Production builds
 
-- **Local Docker:** `../docker-compose.yml` builds from `Dockerfile` using `nginx.conf` (HTTPS with self-signed certs)
-- **Railway:** Build from `Dockerfile.railway` using `nginx.conf.railway` (plain HTTP, TLS handled at Railway edge)
+- **Vercel:** Deploy from repo root, framework=Vite, output dir=`frontend/dist`. SPA routing via `vercel.json`.
+- **Docker:** Build from `Dockerfile` using `nginx.conf` (HTTPS with self-signed certs).
 
 ## Project structure
 
@@ -32,13 +36,18 @@ Vite proxies `/api` requests to `http://localhost:8000` (the backend), stripping
 src/
 ├── App.tsx                 # Root component with routing
 ├── components/
-│   ├── Chat.tsx            # Main chat interface + streaming
-│   ├── AuthContext.tsx     # Supabase auth state management
-│   ├── Login.tsx           # Login page
-│   ├── Signup.tsx          # Signup page
-│   └── Documents.tsx       # SEC filing browser
+│   ├── Chat.tsx            # Main chat interface + streaming + landing page
+│   ├── ThreadContext.tsx    # Thread list + active thread state management
+│   ├── AuthContext.tsx      # Supabase auth state management
+│   ├── AuthPage.tsx        # Login + Signup pages
+│   ├── Dashboard.tsx       # Landing/marketing page with Start Analysis
+│   ├── Layout.tsx          # Sidebar + main content layout
+│   ├── Documents.tsx       # SEC filing browser
+│   └── Settings.tsx        # User settings
 ├── api/
 │   └── quorum.ts           # Backend API client (fetch-based)
+├── types/
+│   └── index.ts            # TypeScript interfaces
 └── lib/
     └── supabase.ts         # Supabase browser client
 ```
