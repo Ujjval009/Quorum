@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     embedding_model: str = "nomic-embed-text"
     embedding_dimensions: int = 768
     ollama_base_url: str = "http://localhost:11434/v1"
+    hf_token: str = ""
 
     # Ingestion
     chunk_size: int = 1000
