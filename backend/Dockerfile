@@ -14,9 +14,11 @@ COPY alembic/ alembic/
 COPY app/ app/
 
 RUN addgroup --system --gid 1001 quorum && \
-    adduser --system --uid 1001 --ingroup quorum --no-create-home quorum && \
+    adduser --system --uid 1001 --ingroup quorum --no-create-home --home /app quorum && \
+    mkdir -p /tmp/uv-cache && chown quorum:quorum /tmp/uv-cache && \
     chown -R quorum:quorum /app
 
+ENV UV_CACHE_DIR=/tmp/uv-cache
 USER quorum
 
 EXPOSE 8000
