@@ -12,7 +12,7 @@ import uuid
 from html.parser import HTMLParser
 
 from app.core.logging import logger
-from app.domain.embeddings import generate_embedding
+from app.domain.embeddings import generate_embedding, generate_embeddings_batch
 from app.models.base import SessionLocal
 from app.models.document import DocumentChunk, SourceDocument
 
@@ -262,25 +262,15 @@ def main() -> None:
             sections=len(sections), chunks=len(chunked_sections),
         )
 
-        for section_title, chunk_text, chunk_idx in chunked_sections:
-            try:
-                emb = generate_embedding(chunk_text)
-            except Exception:
-                logger.exception("Embedding failed, chunk too long", length=len(chunk_text))
-                for sub in _chunk_text(chunk_text, max_chars=2000, overlap=0):
-                    emb = generate_embedding(sub)
-                    c = DocumentChunk(
-                        document_id=doc_id,
-                        chunk_index=chunk_idx,
-                        content=sub,
-                        page_number=1,
-                        section_title=section_title,
-                        token_count=len(sub.split()),
-                        embedding=emb,
-                    )
-                    db.add(c)
-                continue
+        # Batch embed all chunks at once for efficiency
+        texts = [c[1] for c in chunked_sections]
+        try:
+            embeddings = generate_embeddings_batch(texts)
+        except Exception:
+            logger.exception("Batch embedding failed, falling back to individual")
+            embeddings = [generate_embedding(t) for t in texts]
 
+        for (section_title, chunk_text, chunk_idx), emb in zip(chunked_sections, embeddings):
             c = DocumentChunk(
                 document_id=doc_id,
                 chunk_index=chunk_idx,

@@ -1,44 +1,53 @@
 from __future__ import annotations
 
+from huggingface_hub import InferenceClient as HFInferenceClient
 from openai import OpenAI as OpenAIClient
 
 from app.config import settings
 from app.core.logging import logger
 
 
-def _get_client(base_url: str, api_key: str) -> OpenAIClient:
-    return OpenAIClient(base_url=base_url, api_key=api_key)
-
-
-def _huggingface_embed(text: str) -> list[float]:
-    client = _get_client(
-        base_url="https://router.huggingface.co/v1",
-        api_key=settings.hf_token or "",
-    )
-    response = client.embeddings.create(
-        model=settings.embedding_model,
-        input=text,
-    )
-    return response.data[0].embedding
-
-
-def _huggingface_embed_batch(texts: list[str]) -> list[list[float]]:
-    client = _get_client(
-        base_url="https://router.huggingface.co/v1",
-        api_key=settings.hf_token or "",
-    )
-    response = client.embeddings.create(
-        model=settings.embedding_model,
-        input=texts,
-    )
-    return [item.embedding for item in response.data]
-
-
-def _ollama_embed(text: str) -> list[float]:
-    client = _get_client(
+def _get_ollama_client() -> OpenAIClient:
+    return OpenAIClient(
         base_url=settings.ollama_base_url,
         api_key="ollama",
     )
+
+
+def _get_hf_client() -> HFInferenceClient:
+    return HFInferenceClient(api_key=settings.hf_token or "")
+
+
+def _huggingface_embed(text: str) -> list[float]:
+    client = _get_hf_client()
+    result = client.feature_extraction(
+        text=text,
+        model=settings.embedding_model,
+    )
+    if hasattr(result, "tolist"):
+        return result.tolist()
+    if isinstance(result, list) and result and isinstance(result[0], (int, float)):
+        return result
+    if isinstance(result, list) and result and isinstance(result[0], list):
+        return result[0]
+    raise RuntimeError(f"Unexpected HF feature_extraction response: {result}")
+
+
+def _huggingface_embed_batch(texts: list[str]) -> list[list[float]]:
+    client = _get_hf_client()
+    result = client.feature_extraction(
+        text=texts,
+        model=settings.embedding_model,
+    )
+    if hasattr(result, "tolist"):
+        return result.tolist()
+    if isinstance(result, list) and result and isinstance(result[0], list):
+        return result
+    raise RuntimeError(f"Unexpected HF batch response: {result}")
+
+
+def _ollama_embed(text: str) -> list[float]:
+    client = _get_ollama_client()
     response = client.embeddings.create(
         model=settings.embedding_model,
         input=text,
@@ -47,10 +56,7 @@ def _ollama_embed(text: str) -> list[float]:
 
 
 def _ollama_embed_batch(texts: list[str]) -> list[list[float]]:
-    client = _get_client(
-        base_url=settings.ollama_base_url,
-        api_key="ollama",
-    )
+    client = _get_ollama_client()
     response = client.embeddings.create(
         model=settings.embedding_model,
         input=texts,
