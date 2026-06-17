@@ -178,7 +178,7 @@ export default function Dashboard() {
           {/* CTAs */}
           <div className="flex items-center justify-center gap-4 animate-fade-in-up" style={{ animationDelay: '200ms' }}>
             <button
-              onClick={() => handleQueryClick(SUGGESTED_QUERIES[0])}
+              onClick={() => navigate('/workspace')}
               className="inline-flex items-center gap-2 px-6 py-3 bg-blue-600 text-white text-sm font-semibold rounded-xl hover:bg-blue-700 transition-all active:scale-[0.98] shadow-lg shadow-blue-600/20"
             >
               <MessageSquare size={16} />
@@ -338,7 +338,7 @@ export default function Dashboard() {
             Ask your first question and see the difference deterministic financial intelligence makes.
           </p>
           <button
-            onClick={() => handleQueryClick(SUGGESTED_QUERIES[0])}
+            onClick={() => navigate('/workspace')}
             className="inline-flex items-center gap-2 px-6 py-3 bg-blue-600 text-white text-sm font-semibold rounded-xl hover:bg-blue-700 transition-all active:scale-[0.98] shadow-lg shadow-blue-600/20"
           >
             <MessageSquare size={16} />
